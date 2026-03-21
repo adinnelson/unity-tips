@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unity Tips & Tricks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1c2128;--surface:#22272e;--surface-2:#2d333b;--border:#30363d;
+  --text-1:#e6edf3;--text-2:#8b949e;--text-3:#6e7681;
+  --polar:#e84848;--brown:#feb204;--black-bear:#4daec4;
+  --tag-trap:#feb204;--tag-silent:#e84848;--tag-workflow:#2eb870;
+  --mono:'IBM Plex Mono','Courier New',monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+}
+html,body{background:var(--bg);color:var(--text-1);font-family:var(--sans);font-size:15px;line-height:1.65;min-height:100vh;}
+#bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;}
+.wrap{position:relative;z-index:1;max-width:840px;margin:0 auto;padding:48px 36px 96px;}
+.site-header{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;margin-bottom:36px;padding-bottom:28px;border-bottom:1px solid var(--border);}
+.site-title{font-family:var(--mono);font-size:20px;font-weight:500;letter-spacing:-0.01em;color:var(--text-1);margin-bottom:8px;}
+.site-desc{font-size:13px;color:var(--text-2);line-height:1.55;max-width:500px;}
+.bg-controls{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;padding-top:2px;}
+.bg-label{font-family:var(--mono);font-size:10px;color:var(--text-3);letter-spacing:0.1em;text-transform:uppercase;}
+.bg-row{display:flex;align-items:center;gap:4px;}
+.bg-btns{display:flex;gap:3px;}
+.bg-btn{font-family:var(--mono);font-size:11px;padding:3px 8px;background:transparent;border:1px solid var(--border);color:var(--text-3);cursor:pointer;border-radius:3px;transition:all 0.18s;letter-spacing:0.02em;}
+.bg-btn:hover{border-color:var(--text-3);color:var(--text-2);}
+.bg-btn.active{background:var(--surface-2);border-color:var(--text-2);color:var(--text-1);}
+#boids-wrap{display:flex;align-items:center;gap:3px;overflow:hidden;max-width:0;opacity:0;transition:max-width 0.28s ease,opacity 0.22s ease;}
+#boids-wrap.visible{max-width:80px;opacity:1;}
+.divider{color:var(--border);font-size:10px;user-select:none;}
+.legend{display:flex;gap:0;margin-bottom:32px;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.legend-col{flex:1;padding:18px 22px;}
+.legend-col+.legend-col{border-left:1px solid var(--border);}
+.legend-heading{font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:12px;}
+.legend-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;}
+.legend-row:last-child{margin-bottom:0;}
+.legend-desc{font-size:12px;color:var(--text-3);}
+.tier-pill{font-family:var(--mono);font-size:10px;font-weight:500;padding:2px 7px;border-radius:3px;white-space:nowrap;flex-shrink:0;}
+.tier-pill.polar{color:var(--polar);border:1.5px solid rgba(232,72,72,0.8);}
+.tier-pill.brown{color:var(--brown);border:1.5px solid rgba(254,178,4,0.8);}
+.tier-pill.black-bear{color:var(--black-bear);border:1.5px solid rgba(77,174,196,0.8);}
+.tag-pill{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;white-space:nowrap;flex-shrink:0;}
+.tag-pill.trap{color:var(--tag-trap);border:1.5px solid rgba(254,178,4,0.8);}
+.tag-pill.silent{color:var(--tag-silent);border:1.5px solid rgba(232,72,72,0.8);}
+.tag-pill.workflow{color:var(--tag-workflow);border:1.5px solid rgba(46,184,112,0.8);}
+.tier-block{margin-bottom:10px;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.tier-header{display:flex;align-items:center;gap:14px;padding:16px 20px;cursor:pointer;user-select:none;background:var(--surface);position:relative;transition:background 0.15s;}
+.tier-header::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;}
+.tier-block.polar .tier-header::before{background:var(--polar);}
+.tier-block.brown .tier-header::before{background:var(--brown);}
+.tier-block.black .tier-header::before{background:var(--black-bear);}
+.tier-header:hover{background:var(--surface-2);}
+.tier-name{font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:0.06em;text-transform:uppercase;flex-shrink:0;}
+.tier-block.polar .tier-name{color:var(--polar);}
+.tier-block.brown .tier-name{color:var(--brown);}
+.tier-block.black .tier-name{color:var(--black-bear);}
+.tier-sub{font-size:12px;color:var(--text-3);flex:1;min-width:0;}
+.tier-count{font-family:var(--mono);font-size:10px;color:var(--text-3);flex-shrink:0;}
+.chevron{width:16px;height:16px;flex-shrink:0;position:relative;}
+.chevron::before,.chevron::after{content:'';position:absolute;width:6px;height:1.5px;background:var(--text-3);top:50%;transition:transform 0.22s ease;}
+.chevron::before{right:8px;transform:translateY(-50%) rotate(45deg);}
+.chevron::after{left:8px;transform:translateY(-50%) rotate(-45deg);}
+.open>.tier-header .chevron::before{transform:translateY(-50%) rotate(-45deg);}
+.open>.tier-header .chevron::after{transform:translateY(-50%) rotate(45deg);}
+.collapsible{display:grid;grid-template-rows:0fr;transition:grid-template-rows 0.28s ease;}
+.open>.collapsible{grid-template-rows:1fr;}
+.collapsible>*{overflow:hidden;}
+.tier-body{background:var(--bg);border-top:1px solid var(--border);}
+.section-block{border-bottom:1px solid var(--border);}
+.section-block:last-child{border-bottom:none;}
+.section-header{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;cursor:pointer;user-select:none;transition:background 0.15s;background:var(--surface);}
+.section-header:hover{background:var(--surface-2);}
+.section-name{font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-3);}
+.sec-chevron{width:12px;height:12px;position:relative;flex-shrink:0;}
+.sec-chevron::before,.sec-chevron::after{content:'';position:absolute;width:5px;height:1px;background:var(--text-3);top:50%;transition:transform 0.2s ease;}
+.sec-chevron::before{right:6px;transform:translateY(-50%) rotate(45deg);}
+.sec-chevron::after{left:6px;transform:translateY(-50%) rotate(-45deg);}
+.open>.section-header .sec-chevron::before{transform:translateY(-50%) rotate(-45deg);}
+.open>.section-header .sec-chevron::after{transform:translateY(-50%) rotate(45deg);}
+.sec-collapsible{display:grid;grid-template-rows:1fr;transition:grid-template-rows 0.22s ease;}
+.closed>.sec-collapsible{grid-template-rows:0fr;}
+.sec-collapsible>*{overflow:hidden;}
+.entry-list{background:var(--bg);}
+.entry{padding:14px 20px 14px 32px;position:relative;}
+.entry::before{content:'';position:absolute;left:20px;top:16px;bottom:16px;width:1.5px;opacity:0.6;}
+.tier-block.polar .entry::before{background:var(--polar);}
+.tier-block.brown .entry::before{background:var(--brown);}
+.tier-block.black .entry::before{background:var(--black-bear);}
+.entry-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:5px;}
+.entry-title{font-size:14px;font-weight:500;color:var(--text-1);line-height:1.4;flex:1;}
+.entry-tag{font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;flex-shrink:0;margin-top:2px;}
+.entry-tag.trap{color:var(--tag-trap);border:1.5px solid rgba(254,178,4,0.7);}
+.entry-tag.silent{color:var(--tag-silent);border:1.5px solid rgba(232,72,72,0.7);}
+.entry-tag.workflow{color:var(--tag-workflow);border:1.5px solid rgba(46,184,112,0.7);}
+.entry-body{font-size:13px;color:var(--text-2);line-height:1.65;}
+.entry-body p+p{margin-top:9px;}
+.entry-body code{font-family:var(--mono);font-size:12px;background:var(--surface-2);border:1px solid var(--border);padding:1px 5px;border-radius:3px;color:var(--text-1);}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div class="wrap">
+<header class="site-header">
+  <div>
+    <h1 class="site-title">Unity Tips & Tricks</h1>
+    <p class="site-desc">A mid-project reference for anyone new to Unity. Covers frustrations Unity does not surface on its own, where a solution exists but is non-obvious. Not a getting-started guide.</p>
+  </div>
+  <div class="bg-controls">
+    <span class="bg-label">background</span>
+    <div class="bg-row">
+      <div class="bg-btns">
+        <button class="bg-btn active" data-mode="flow">flow</button>
+        <button class="bg-btn" data-mode="noise">noise</button>
+        <button class="bg-btn" data-mode="drift">drift</button>
+      </div>
+      <div id="boids-wrap">
+        <span class="divider">|</span>
+        <button class="bg-btn" id="boids-btn">boids</button>
+      </div>
+    </div>
+  </div>
+</header>
+<div class="legend">
+  <div class="legend-col">
+    <div class="legend-heading">tiers</div>
+    <div class="legend-row"><span class="tier-pill polar">polar bear</span><span class="legend-desc">dangerous to not know</span></div>
+    <div class="legend-row"><span class="tier-pill brown">brown bear</span><span class="legend-desc">important, more situational</span></div>
+    <div class="legend-row"><span class="tier-pill black-bear">black bear</span><span class="legend-desc">workflow improvements</span></div>
+  </div>
+  <div class="legend-col">
+    <div class="legend-heading">tags</div>
+    <div class="legend-row"><span class="tag-pill silent">silent failure</span><span class="legend-desc">no indication something went wrong</span></div>
+    <div class="legend-row"><span class="tag-pill trap">bear trap</span><span class="legend-desc">non-obvious behavior you will fall into</span></div>
+    <div class="legend-row"><span class="tag-pill workflow">workflow</span><span class="legend-desc">faster or cleaner way to work</span></div>
+  </div>
+</div>
+<div id="content"></div>
+</div>
+<script>
+const D=[{id:'polar',cls:'polar',name:'Polar Bear',sub:'Dangerous to Not Know',sections:[{t:'Editor & Workflow',e:[{ti:'Set the Play Mode tint to something visually obvious',tg:'trap',tl:'bear trap',b:['Edit \u2192 Preferences \u2192 Colors \u2192 Playmode tint. Any changes made to scene objects during Play Mode are lost when exiting. The default tint is subtle enough to miss when you switch contexts.']},{ti:'Unity has no autosave; a crash or force-close loses all unsaved work',tg:'silent',tl:'silent failure',b:['Edit \u2192 Preferences \u2192 General \u2192 Autosave can be enabled. It triggers a full scene serialization pass on each save, which stalls the editor on large scenes. Treat it as a personal toggle rather than a permanent setting.']},{ti:'Play Mode is a viable environment for dialing in values \u2014 Copy Component saves them',tg:'workflow',tl:'workflow',b:['Right-click any component header during Play Mode and select Copy Component. Exit Play Mode. Right-click the same component and select Paste Component Values. Works across objects of the same type. This makes Play Mode a legitimate space for iterating on physics feel, timing, and numbers rather than just a test environment.']},{ti:'Inspector Debug mode exposes all serialized fields, including private ones',tg:'workflow',tl:'workflow',b:['The three-dot menu in the top-right corner of the Inspector has a Debug toggle. Shows all serialized fields regardless of access modifier, object instance IDs, and internal component state. Most people never open this menu.']},{ti:'F frames the selected object in the Scene view',tg:'workflow',tl:'workflow',b:['Tap F with any object selected to centre and frame it in the Scene view. One of the most used shortcuts in Unity and not labeled anywhere obvious.']}]},{t:'Scene & Hierarchy',e:[{ti:'Prefabs propagate changes to all instances unless a field is overridden',tg:'silent',tl:'silent failure',b:['A Prefab is a reusable GameObject saved as a project asset. Changes to the Prefab asset propagate to all instances automatically, unless a specific field on a specific instance has been manually overridden. Unity indicates an overridden field with a blue bar in the Inspector.','The trap: a field flagged as overridden will never receive future updates from the Prefab, even if its current value matches the Prefab\'s exactly. The override is set by the act of modification, not by the value diverging. Undoing through the undo stack does not clear the flag \u2014 only explicitly reverting via right-click on the field does. Future Prefab edits will silently skip that field on that instance with no warning.']},{ti:'Moving or renaming assets outside the Unity Editor silently breaks all references',tg:'silent',tl:'silent failure',b:['Unity tracks every asset by a GUID stored in a paired `.meta` file. Moving or renaming an asset through the OS file browser causes Unity to treat it as a new asset with a new GUID, discarding the old one. Every reference to that asset in scenes, prefabs, and materials breaks with no warning. The symptom \u2014 missing scripts, missing textures, pink materials \u2014 looks like corruption rather than user error. Always move and rename assets through the Project window.']},{ti:'2D sprite draw order is controlled by Sorting Layers, not Z position',tg:'trap',tl:'bear trap',b:['Moving a sprite on the Z axis does not reliably control draw order. The Sprite Renderer\'s Sorting Layer and Order in Layer fields are the correct controls. Z position works in almost every other context, making this easy to misattribute to a bug. The Sorting Layer list is defined in Project Settings \u2192 Tags and Layers.']}]}]},{id:'brown',cls:'brown',name:'Brown Bear',sub:'Important to Know',sections:[{t:'Editor & Workflow',e:[{ti:'The Game view defaults to Free Aspect, which represents no real resolution',tg:'trap',tl:'bear trap',b:['Free Aspect stretches to fill whatever the panel happens to be. Any UI or camera framing work done in Free Aspect is designed to an arbitrary window size. Set this to a real target resolution early and keep it there.']},{ti:'Console Collapse and Error Pause are off by default',tg:'workflow',tl:'workflow',b:['Collapse merges repeated identical log entries into one with a count, essential when any per-frame log is running. Error Pause freezes Play Mode the moment an exception is thrown, leaving scene state intact at the point of failure. Both are easy to miss.']},{ti:'Inspector panels can be locked to a specific object and duplicated',tg:'workflow',tl:'workflow',b:['The padlock icon in the top-right corner of the Inspector locks it to the current selection. Right-clicking the Inspector tab and selecting Add Tab opens a second panel. Both can be locked independently, useful for comparing two objects or keeping a Prefab open alongside a scene object.']},{ti:'Prefab instance field overrides can be applied or reverted individually',tg:'workflow',tl:'workflow',b:['Right-clicking any inspector field on an instantiated Prefab lets you apply that value back to the Prefab asset or revert it to the Prefab\'s current value. Apply propagates to all instances. Revert clears the override flag. See the Prefabs entry for why this matters.']},{ti:'Inspector Transform values are always local, not world space',tg:'trap',tl:'bear trap',b:['When a GameObject is parented, every Transform value is relative to the parent. An object showing (0, 0, 0) can be anywhere in the world. World space values require a script call or the Transform\'s right-click context menu.']},{ti:'The Pivot/Center and Local/Global toolbar toggles affect all gizmo behavior',tg:'trap',tl:'bear trap',b:['Pivot/Center controls whether the gizmo appears at the object\'s actual pivot or the bounding-box center of the selection. Local/Global controls whether it is oriented to local or world axes. Easy to accidentally toggle with no obvious label. Unexpected movement or rotation in the Scene view is almost always one of these being wrong.']},{ti:'Scenes not registered in the Build Profile are ignored by the build',tg:'trap',tl:'bear trap',b:['Window \u2192 Build Profile \u2192 Scene List. The scene at index 0 is the entry point when the game launches. A scene not in this list does not exist to the build \u2014 no error, just silently absent.']},{ti:'Disabling Domain and Scene Reload makes Play Mode entry significantly faster',tg:'workflow',tl:'workflow',b:['Edit \u2192 Project Settings \u2192 Editor \u2192 Enter Play Mode Settings. Disabling both can reduce iteration time from several seconds to near-instant. Downsides: static variables are not reset between runs (see "Static variables persist across Play Mode sessions" in Brown Bear Scripting), and scene state persists from the previous session. This is a project-wide setting committed to version control \u2014 confirm with the team before enabling.']},{ti:'Empty GameObjects at world origin are the convention for Hierarchy folders',tg:'workflow',tl:'workflow',b:['Unity has no native folder system in the Hierarchy. Empty GameObjects with zeroed transforms, named with brackets or caps such as [ENVIRONMENT] or [SYSTEMS], are the standard workaround. Avoid parenting gameplay objects under these if transform inheritance matters.']}]},{t:'Scene & Hierarchy',e:[{ti:'Double-clicking a Prefab asset enters a dedicated edit mode',tg:'workflow',tl:'workflow',b:['Changes made here apply directly to the asset, not to a scene instance. Most new users either edit instances and apply overrides without knowing this mode exists, or never find it at all. The breadcrumb bar at the top of the Scene view shows when you are inside Prefab edit mode.']}]},{t:'UI',e:[{ti:'Canvas Scaler defaults to Constant Pixel Size, breaking UI across resolutions',tg:'trap',tl:'bear trap',b:['The Canvas Scaler on every root Canvas defaults to Constant Pixel Size, meaning UI elements are measured in literal screen pixels. Set it to Scale With Screen Size and specify a reference resolution early. UI built without this will break on any display other than the one it was designed on.']},{ti:'World-space input fires even when clicking UI elements unless explicitly guarded',tg:'trap',tl:'bear trap',b:['Clicking a UI button also fires any world-space pointer logic on the same frame. `EventSystem.current.IsPointerOverGameObject()` returns true when the pointer is over a UI element \u2014 use it as an early exit in any world-space input handler.']}]},{t:'Animation',e:[{ti:'Animator transitions have Has Exit Time on by default, delaying all responses',tg:'trap',tl:'bear trap',b:['A transition will not fire until the current animation reaches a normalized time threshold, regardless of whether the condition is already met. Triggers that appear ignored or transitions that feel delayed are almost always this. Not visible unless you select the transition arrow in the Animator window. Disable it for any transition that should respond immediately.']}]},{t:'Assets & Rendering',e:[{ti:'TMP fonts must be baked into a font atlas before characters render correctly',tg:'trap',tl:'bear trap',b:['Any custom font used with TextMeshPro must be processed through Window \u2192 TextMeshPro \u2192 Font Asset Creator. Characters not in the atlas render as blank squares at runtime with no error. Regenerate the atlas if new characters are needed later.']}]},{t:'Scripting',e:[{ti:'Static variables persist across Play Mode sessions and are not automatically reset',tg:'silent',tl:'silent failure',b:['Statics survive exiting and re-entering Play Mode within the same editor session. The symptom is state that is wrong on the second run but correct on the first \u2014 difficult to connect to Play Mode persistence without knowing this. Reset statics manually in `Awake`, or use `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]` to hook into the domain reload reset.']},{ti:'`Awake` and `Start` have distinct initialization roles and fire in a fixed order',tg:'trap',tl:'bear trap',b:['All `Awake` calls across all objects complete before any `Start` fires. Initialize your own component\'s state in `Awake`. Reference other components in `Start`. Reversing this produces null reference errors that are inconsistent across scene configurations.']},{ti:'`OnEnable` and `OnDisable` fire on every toggle, not just on creation',tg:'trap',tl:'bear trap',b:['`Start` fires once. `OnEnable` fires on every activation including the first. Event subscriptions belong in `OnEnable` paired with unsubscription in `OnDisable`. Subscriptions in `Start` accumulate duplicate listeners after any disable/re-enable cycle with no error.']},{ti:'`?.` and `??` bypass Unity\'s null overload and throw on destroyed objects',tg:'silent',tl:'silent failure',b:['Unity overloads `==` on `UnityEngine.Object` so a destroyed object returns `true` for `== null`. The `?.` and `??` operators bypass this and check the actual CLR reference, which is not null after destruction. Code that looks null-safe throws a `MissingReferenceException`. Use `if (obj != null)` or the implicit bool conversion `if (obj)`.']},{ti:'`DontDestroyOnLoad` objects accumulate duplicates across Play Mode sessions',tg:'silent',tl:'silent failure',b:['Objects passed to `DontDestroyOnLoad` are moved to a persistent internal scene visible in the Hierarchy during Play Mode as \u201cDontDestroyOnLoad\u201d. Re-entering Play Mode without restarting the editor spawns duplicates of any objects there. A guard in `Awake` that checks for an existing instance and destroys the new one is the standard fix.']},{ti:'`WaitForSeconds` pauses when `Time.timeScale` is 0; `WaitForSecondsRealtime` does not',tg:'trap',tl:'bear trap',b:['`Time.timeScale = 0` also freezes all `WaitForSeconds`-based coroutines. Anything that must continue during a pause needs `WaitForSecondsRealtime`.']},{ti:'Execution order across different MonoBehaviour types is undefined by default',tg:'trap',tl:'bear trap',b:['Across different MonoBehaviour classes, the order that `Awake` and `Update` fire is undefined without explicit configuration in Project Settings \u2192 Script Execution Order. Initialization logic that depends on another script having already run produces bugs inconsistent across scene configurations.']},{ti:'Per-frame values without `Time.deltaTime` are framerate-dependent',tg:'trap',tl:'bear trap',b:['Any value applied in `Update` representing a rate \u2014 movement, rotation, timers \u2014 must be multiplied by `Time.deltaTime`. Without it behavior runs at double the speed at 120fps versus 60fps.']},{ti:'`Destroy(this)` removes the component; `Destroy(gameObject)` removes the object',tg:'trap',tl:'bear trap',b:['Both compile and run silently. The wrong call leaves the object in the scene with the script gone \u2014 no error, no indication.']},{ti:'`[SerializeField]` exposes private fields to the Inspector without making them public',tg:'workflow',tl:'workflow',b:['Keeps the field private to other scripts while making it editable in the Inspector. The inverse, `[HideInInspector]`, hides a public field from the Inspector without making it private.']},{ti:'Changing a field\'s default value in code does not override its serialized Inspector value',tg:'trap',tl:'bear trap',b:['The value shown in the Inspector is what Unity uses, not the field initializer in code. To reset to code defaults, use Reset from the component\'s right-click context menu.']},{ti:'`LoadScene` blocks the main thread; `LoadSceneAsync` does not',tg:'workflow',tl:'workflow',b:['`SceneManager.LoadScene` produces a visible hitch or black frame. `LoadSceneAsync` returns an `AsyncOperation` whose `progress` can drive a loading bar. Set `allowSceneActivation = false` to hold at 90% until you explicitly release it.']}]}]},{id:'black',cls:'black',name:'Black Bear',sub:'Workflow Improvements',sections:[{t:'Editor & Workflow',e:[{ti:'Console Clear on Play is enabled by default',tg:'trap',tl:'bear trap',b:['The Console clears all logs when entering Play Mode. Any log or error produced before Play Mode is silently discarded. Toggle it off via the Clear on Play button in the Console toolbar to preserve logs across the transition.']},{ti:'Frame stepping advances one tick at a time but skips framerate-dependent behavior',tg:'workflow',tl:'workflow',b:['The step button next to Pause advances exactly one frame. Useful for inspecting animation states and event timing. Behavior tied to `Time.deltaTime` will not reproduce correctly when stepping.']},{ti:'Right-clicking a component header exposes Reset, Copy, and Paste',tg:'workflow',tl:'workflow',b:['Reset returns all fields to type defaults. Copy Component and Paste Component Values transfer full component state between objects of the same type. Paste as New Component adds a copy to the target.']},{ti:'Find References in Scene filters the Hierarchy to objects using a specific asset',tg:'workflow',tl:'workflow',b:['Right-click any script or asset in the Project window and select Find References in Scene. Useful when refactoring or auditing which objects use something.']},{ti:'The Scene view has shading and overdraw debug modes beyond the default',tg:'workflow',tl:'workflow',b:['The Shaded dropdown also offers Wireframe, Shaded Wireframe, and overdraw views. Useful for checking mesh topology or investigating unexpected rendering behavior.']},{ti:'Quick Search (Ctrl+K) searches assets, scene objects, and settings at once',tg:'workflow',tl:'workflow',b:['Assets, scene objects, packages, settings, and menu items with type filtering and fuzzy matching. Faster than navigating windows for anything you can partially name.']},{ti:'The Project window search bar accepts `t:` type tokens',tg:'workflow',tl:'workflow',b:['`t:Prefab`, `t:Material`, `t:AudioClip` filter by asset type. Combinable with a name query: `t:Script Player` finds scripts with "Player" in the name.']},{ti:'The circle-dot button next to reference fields opens a filtered object picker',tg:'workflow',tl:'workflow',b:['Opens a picker filtered to compatible objects in the current scene. Avoids searching the Hierarchy manually.']},{ti:'Hold V and drag to snap a vertex to any other vertex in the scene',tg:'workflow',tl:'workflow',b:['The primary tool for assembling modular environments without manually entering coordinates.']},{ti:'Hold Ctrl and drag to snap movement to the world grid',tg:'workflow',tl:'workflow',b:['Grid size is configurable via Edit \u2192 Grid and Snap Settings.']},{ti:'Scene view and Game camera angles can be synced in either direction',tg:'workflow',tl:'workflow',b:['GameObject \u2192 Align With View (Ctrl+Shift+F) sets the selected camera\'s transform to your current Scene view angle. Align View to Selected does the reverse.']},{ti:'Double-clicking a Console entry opens the relevant script at the relevant line',tg:'workflow',tl:'workflow',b:[]},{ti:'`[ExecuteAlways]` runs a MonoBehaviour in the editor outside of Play Mode',tg:'workflow',tl:'workflow',b:['Useful for any component whose effect needs to be visible while building a scene. Without it the component only runs in Play Mode.']}]},{t:'Scripting',e:[{ti:'Accessing `Renderer.material` creates a silent per-object material instance',tg:'silent',tl:'silent failure',b:['Accessing `.material` creates a private copy for that object, breaking GPU instancing and disconnecting it from future asset changes \u2014 no warning, no Inspector indication. Use `.sharedMaterial` to modify the shared asset. Use `.material` only when a unique instance is intentional.']},{ti:'`Debug.Log()` works everywhere; `print()` only works in MonoBehaviours',tg:'trap',tl:'bear trap',b:['`print()` breaks the moment your code moves outside a MonoBehaviour, which happens naturally as projects grow. `Debug.Log()` also accepts a context object as a second argument, highlighting the source object in the Hierarchy when you click the log entry.']},{ti:'`Debug.DrawLine` and `Debug.DrawRay` visualize vectors in the Scene view',tg:'workflow',tl:'workflow',b:['Render only in the Scene view or Game view with Gizmos enabled. The correct way to visualize raycasts and movement vectors without adding geometry. An optional duration parameter keeps the line visible beyond a single frame.']},{ti:'Cache `GetComponent` in `Awake`; calling it in `Update` has a real cost',tg:'workflow',tl:'workflow',b:['`GetComponent` involves a managed-to-native bridge. Call it once in `Awake`, store the result, reference the field everywhere else.']},{ti:'ScriptableObjects are the Unity-native solution for shared data across scenes',tg:'workflow',tl:'workflow',b:['ScriptableObjects are assets that hold serialized data referenceable by multiple Prefabs and scenes without coupling them. If you are using static classes or singletons to share data between scenes, this is the alternative worth knowing about.']},{ti:'`[ContextMenu("Label")]` adds right-click actions to a component in the Inspector',tg:'workflow',tl:'workflow',b:['Decorating any method with this attribute adds it to the component\'s context menu. Useful for editor-time data setup or triggering behavior without entering Play Mode.']},{ti:'`[RequireComponent]` automatically adds and prevents removal of a dependency',tg:'workflow',tl:'workflow',b:['Unity adds the required component automatically if missing and prevents its removal. Cleaner than a null check in `Awake` and communicates intent to anyone reading the component.']},{ti:'`FindObjectsByType` replaces the deprecated `FindObjectOfType` in Unity 6',tg:'workflow',tl:'workflow',b:['Splits into `FindObjectsByType<T>(FindObjectsSortMode.None)`, `FindFirstObjectByType<T>()`, and `FindAnyObjectByType<T>()`. The sort mode argument is mandatory; `None` is faster and correct unless order matters. `FindWithTag` is faster for tagged objects. All of these must be called in `Awake` or `Start` to cache the result, never in `Update`.']},{ti:'`Application.Quit()` only executes in a build, not in the editor',tg:'trap',tl:'bear trap',b:['For editor testing use `UnityEditor.EditorApplication.isPlaying = false`. Worth wrapping: `#if UNITY_EDITOR ... #else Application.Quit(); #endif`.']},{ti:'`[System.Serializable]` is required for custom classes to appear in the Inspector',tg:'trap',tl:'bear trap',b:['A custom class used as a field on a MonoBehaviour must be marked `[System.Serializable]` to be serialized. Without it the fields simply do not appear in the Inspector \u2014 no error, no warning. The attribute is not inherited, so each class in a hierarchy needs it explicitly.']},{ti:'Code referencing the `UnityEditor` namespace must be wrapped in `#if UNITY_EDITOR`',tg:'trap',tl:'bear trap',b:['Any script that references `UnityEditor` types compiles fine in the editor but breaks builds, since that namespace is stripped from runtime builds entirely. Wrap editor-only code: `#if UNITY_EDITOR ... #endif`. The failure is build-time only, so it will not surface until someone attempts a build.']}]},{t:'Inspector Attributes',e:[{ti:'`[Header]`, `[Range]`, `[Tooltip]`, and related attributes improve Inspector usability at no cost',tg:'workflow',tl:'workflow',b:['`[Header("Label")]` draws a bold section label. `[Space]` adds padding. `[Range(min, max)]` renders a float or int as a slider. `[Multiline]` and `[TextArea]` expand string fields. `[Tooltip("text")]` shows a description on hover. No setup required.']}]},{t:'Physics & Collision',e:[{ti:'Trigger and collision callbacks require at least one Rigidbody in the interaction',tg:'trap',tl:'bear trap',b:['`OnTriggerEnter`, `OnCollisionEnter`, and their variants only fire if at least one of the involved objects has a Rigidbody (or Rigidbody2D) somewhere in its hierarchy. Two objects with only Colliders will never produce callbacks between them. A static trigger zone will never fire unless the entering object has a Rigidbody. This applies in both 2D and 3D.']},{ti:'The Physics Layer Collision Matrix silently controls which layers interact',tg:'silent',tl:'silent failure',b:['Project Settings \u2192 Physics 2D (or Physics) contains a grid defining which layers physically interact. An unchecked intersection produces no collisions and no trigger events \u2014 no error, no warning. When callbacks stop firing and the setup looks correct, check here first.']}]}]}];
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function parse(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>');}
+function count(t){return t.sections.reduce((n,s)=>n+s.e.length,0);}
+
+function render(){
+  document.getElementById('content').innerHTML=D.map(tier=>`
+<div class="tier-block ${tier.cls}" id="t-${tier.id}">
+  <div class="tier-header" onclick="tog('t-${tier.id}')">
+    <span class="tier-name">${tier.name}</span>
+    <span class="tier-sub">${tier.sub}</span>
+    <span class="tier-count">${count(tier)} entries</span>
+    <span class="chevron"></span>
+  </div>
+  <div class="collapsible"><div>
+  <div class="tier-body">${tier.sections.map((sec,si)=>`
+<div class="section-block" id="s-${tier.id}-${si}">
+  <div class="section-header" onclick="togs('s-${tier.id}-${si}')">
+    <span class="section-name">${sec.t}</span>
+    <span class="sec-chevron"></span>
+  </div>
+  <div class="sec-collapsible"><div class="entry-list">${sec.e.map(e=>`
+<div class="entry">
+  <div class="entry-head">
+    <span class="entry-title">${parse(e.ti)}</span>
+    <span class="entry-tag ${e.tg}">${e.tl}</span>
+  </div>
+  ${e.b.length?`<div class="entry-body">${e.b.map(p=>`<p>${parse(p)}</p>`).join('')}</div>`:''}
+</div>`).join('')}</div></div>
+</div>`).join('')}</div>
+  </div></div>
+</div>`).join('');
+}
+
+function tog(id){document.getElementById(id).classList.toggle('open');}
+function togs(id){document.getElementById(id).classList.toggle('closed');}
+render();
+
+const canvas=document.getElementById('bg');
+const ctx=canvas.getContext('2d');
+let W,H,mx=0,my=0,pmx=0,pmy=0,mvx=0,mvy=0,mode='flow',boidsOn=false;
+
+// ---- FLUID SIM ----
+const FW=128,FH=96,N=FW*FH;
+const DT=1/60,VISC=0.000001,ITER=20,MIN_DENS=0.18,AMBIENT_RATE=0.004;
+const VORT_STR=0.18,BUOYANCY=0.00035;
+let vx,vy,vx0,vy0,dens,dens0,curl,detail,noiseT=0;
+
+function initFluid(){
+  vx=new Float32Array(N);vy=new Float32Array(N);
+  vx0=new Float32Array(N);vy0=new Float32Array(N);
+  dens=new Float32Array(N);dens0=new Float32Array(N);
+  curl=new Float32Array(N);detail=new Float32Array(N);
+  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
+    const nx=i/FW,ny=j/FH;
+    dens[fi(i,j)]=0.22+sn(nx*4,ny*4)*0.12+sn(nx*8+3,ny*8+1.7)*0.06;
+    detail[fi(i,j)]=sn(nx*6+10,ny*6+7)*0.7+sn(nx*12+5,ny*12+3)*0.3;
+  }}
+}
+
+function fi(x,y){return y*FW+x;}
+
+function setBnd(b,f){
+  if(b===0){
+    for(let i=0;i<FW;i++){f[fi(i,0)]=f[fi(i,1)];f[fi(i,FH-1)]=f[fi(i,FH-2)];}
+    for(let j=0;j<FH;j++){f[fi(0,j)]=f[fi(1,j)];f[fi(FW-1,j)]=f[fi(FW-2,j)];}
+  } else {
+    for(let i=0;i<FW;i++){f[fi(i,0)]=0;f[fi(i,FH-1)]=0;}
+    for(let j=0;j<FH;j++){f[fi(0,j)]=0;f[fi(FW-1,j)]=0;}
+  }
+}
+
+function linSolve(b,x,x0,a,c){
+  const cR=1/c;
+  for(let k=0;k<ITER;k++){
+    for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+      x[fi(i,j)]=(x0[fi(i,j)]+a*(x[fi(i-1,j)]+x[fi(i+1,j)]+x[fi(i,j-1)]+x[fi(i,j+1)]))*cR;
+    }}
+    setBnd(b,x);
+  }
+}
+
+function diffuse(b,x,x0,diff){
+  const a=DT*diff*FW*FH;
+  linSolve(b,x,x0,a,1+4*a);
+}
+
+function advect(b,d,d0,u,v){
+  const dt0x=DT*FW,dt0y=DT*FH;
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
+    x=Math.max(0.5,Math.min(FW-1.5,x));
+    y=Math.max(0.5,Math.min(FH-1.5,y));
+    const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
+    const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
+    d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
+  }}
+  setBnd(b,d);
+}
+
+function advectDetail(d,d0,u,v){
+  const dt0x=DT*FW,dt0y=DT*FH;
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
+    x=Math.max(0.5,Math.min(FW-1.5,x));
+    y=Math.max(0.5,Math.min(FH-1.5,y));
+    const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
+    const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
+    d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
+  }}
+}
+
+function project(u,v,p,div){
+  const hx=1/FW,hy=1/FH;
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    div[fi(i,j)]=-0.5*(hx*(u[fi(i+1,j)]-u[fi(i-1,j)])+hy*(v[fi(i,j+1)]-v[fi(i,j-1)]));
+    p[fi(i,j)]=0;
+  }}
+  setBnd(0,div);setBnd(0,p);
+  linSolve(0,p,div,1,4);
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    u[fi(i,j)]-=0.5*(p[fi(i+1,j)]-p[fi(i-1,j)])/hx;
+    v[fi(i,j)]-=0.5*(p[fi(i,j+1)]-p[fi(i,j-1)])/hy;
+  }}
+  setBnd(1,u);setBnd(2,v);
+}
+
+function vorticityConfinement(u,v){
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    curl[fi(i,j)]=(v[fi(i+1,j)]-v[fi(i-1,j)])-(u[fi(i,j+1)]-u[fi(i,j-1)]);
+  }}
+  for(let j=2;j<FH-2;j++){for(let i=2;i<FW-2;i++){
+    const dw_dx=Math.abs(curl[fi(i+1,j)])-Math.abs(curl[fi(i-1,j)]);
+    const dw_dy=Math.abs(curl[fi(i,j+1)])-Math.abs(curl[fi(i,j-1)]);
+    const len=Math.hypot(dw_dx,dw_dy)+0.0001;
+    const nx=dw_dx/len,ny=dw_dy/len;
+    const c=curl[fi(i,j)];
+    u[fi(i,j)]+=VORT_STR*DT*(ny*c);
+    v[fi(i,j)]-=VORT_STR*DT*(nx*c);
+  }}
+}
+
+function applyBuoyancy(u,v,d){
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    v[fi(i,j)]-=d[fi(i,j)]*BUOYANCY;
+  }}
+}
+
+function applyLift(u,v,t){
+  const bt=t*0.008;
+  for(let i=1;i<FW-1;i++){
+    const nx=i/FW;
+    const lift=(sn(nx*3+bt,bt*0.6)*0.6+0.4)*0.006;
+    for(let j=Math.floor(FH*0.72);j<FH-1;j++){
+      const fade=1-(j-FH*0.72)/(FH*0.28);
+      v[fi(i,j)]-=lift*fade*fade;
+    }
+  }
+}
+
+function stepFluid(){
+  noiseT+=DT;
+  const mspd=Math.hypot(mvx,mvy);
+  vx0.fill(0);vy0.fill(0);dens0.fill(0);
+  if(mspd>0.4){
+    const gx=mx/W*FW,gy=my/H*FH,r=2.2;
+    const str=Math.min(mspd*0.004,0.18);
+    for(let j=Math.max(1,Math.floor(gy-r*2));j<Math.min(FH-1,Math.ceil(gy+r*2));j++){
+      for(let i=Math.max(1,Math.floor(gx-r*2));i<Math.min(FW-1,Math.ceil(gx+r*2));i++){
+        const w=Math.exp(-(Math.pow(i-gx,2)+Math.pow(j-gy,2))/(r*r));
+        vx0[fi(i,j)]+=mvx*str*w;
+        vy0[fi(i,j)]+=mvy*str*w;
+      }
+    }
+  }
+  for(let i=0;i<N;i++){
+    if(dens[i]<MIN_DENS) dens0[i]+=Math.min(AMBIENT_RATE,(MIN_DENS-dens[i])*0.08);
+  }
+  updateVoid();
+  for(let i=0;i<N;i++){vx[i]+=vx0[i];vy[i]+=vy0[i];}
+  for(let i=0;i<N;i++){vx[i]*=0.9995;vy[i]*=0.9995;}
+  diffuse(1,vx0,vx,VISC);diffuse(2,vy0,vy,VISC);
+  project(vx0,vy0,vx,vy);
+  advect(1,vx,vx0,vx0,vy0);advect(2,vy,vy0,vx0,vy0);
+  project(vx,vy,vx0,vy0);
+  vorticityConfinement(vx,vy);
+  applyBuoyancy(vx,vy,dens);
+  applyLift(vx,vy,noiseT);
+  for(let i=0;i<N;i++) dens[i]+=dens0[i];
+  diffuse(0,dens0,dens,0.000002);
+  advect(0,dens,dens0,vx,vy);
+  const dtmp=detail.slice();
+  advectDetail(detail,dtmp,vx,vy);
+  for(let i=0;i<N;i++) if(dens[i]<MIN_DENS*0.5) dens[i]=MIN_DENS*0.5;
+}
+
+let mouseHeld=false,holdStart=0,holdPower=0,holdR=0;
+const MAX_HOLD_R=8,HOLD_TIME=280;
+function eio(t){return t<0.5?2*t*t:-1+(4-2*t)*t;}
+
+function updateVoid(){
+  if(!mouseHeld)return;
+  const t=Math.min(1,(performance.now()-holdStart)/HOLD_TIME);
+  holdPower=eio(t);holdR=holdPower*MAX_HOLD_R;
+  const gx=mx/W*FW,gy=my/H*FH;
+  for(let j=Math.max(1,Math.floor(gy-holdR-1));j<Math.min(FH-1,Math.ceil(gy+holdR+1));j++){
+    for(let i=Math.max(1,Math.floor(gx-holdR-1));i<Math.min(FW-1,Math.ceil(gx+holdR+1));i++){
+      const d=Math.hypot(i-gx,j-gy);
+      if(d<holdR){
+        const rm=holdPower*0.055*(1-d/holdR);
+        dens[fi(i,j)]=Math.max(0,dens[fi(i,j)]-rm);
+      }
+    }
+  }
+}
+
+function releaseVoid(cx,cy){
+  if(holdR<0.5)return;
+  const gx=cx/W*FW,gy=cy/H*FH,r=holdR*2.8;
+  for(let j=Math.max(1,Math.floor(gy-r));j<Math.min(FH-1,Math.ceil(gy+r));j++){
+    for(let i=Math.max(1,Math.floor(gx-r));i<Math.min(FW-1,Math.ceil(gx+r));i++){
+      const dx=gx-i,dy=gy-j,d=Math.hypot(dx,dy);
+      if(d>0.1&&d<r){
+        const s=(1-d/r)*holdPower*4.5;
+        vx[fi(i,j)]+=(dx/d)*s;vy[fi(i,j)]+=(dy/d)*s;
+      }
+    }
+  }
+}
+
+document.addEventListener('mousedown',e=>{
+  if(mode==='noise'){mouseHeld=true;holdStart=performance.now();}
+});
+document.addEventListener('mouseup',e=>{
+  if(mode==='noise'&&mouseHeld){releaseVoid(e.clientX,e.clientY);mouseHeld=false;holdPower=0;holdR=0;}
+});
+document.addEventListener('mouseleave',()=>{if(mouseHeld){mouseHeld=false;holdPower=0;holdR=0;}});
+
+const off=document.createElement('canvas');
+const oc=off.getContext('2d');
+
+function drawNoise(){
+  stepFluid();
+  off.width=FW;off.height=FH;
+  const img=oc.createImageData(FW,FH);
+  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
+    const idx=fi(i,j);
+    const d=dens[idx];
+    const det=Math.max(0,Math.min(1,detail[idx]));
+    const combined=d*(0.55+det*0.9);
+    const br=1-Math.exp(-combined*6.5);
+    const px=(j*FW+i)*4;
+    img.data[px]=Math.floor(10+br*32);
+    img.data[px+1]=Math.floor(12+br*40);
+    img.data[px+2]=Math.floor(15+br*50+(1-br)*4);
+    img.data[px+3]=255;
+  }}
+  oc.putImageData(img,0,0);
+  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+  ctx.drawImage(off,0,0,W,H);
+}
+
+// ---- DRIFT ----
+function h2(x,y){let h=(x*374761393+y*1440673023)|0;h=(h^(h>>13))*1274126177;h=h^(h>>16);return(h&0x7fffffff)/0x7fffffff;}
+function sn(x,y){const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,ux=xf*xf*(3-2*xf),uy=yf*yf*(3-2*yf);return h2(xi,yi)*(1-ux)*(1-uy)+h2(xi+1,yi)*ux*(1-uy)+h2(xi,yi+1)*(1-ux)*uy+h2(xi+1,yi+1)*ux*uy;}
+
+const TRAIL_MAX=70,TRAIL_INT=3;
+const PARTS=Array.from({length:150},(_,i)=>({
+  x:Math.random()*1920,y:Math.random()*1080,
+  vx:(Math.random()-.5)*0.3,vy:(Math.random()-.5)*0.3,
+  r:1.1+Math.random()*1.1,
+  seed:h2(i*7,i*13)*120+i*0.4,
+  trail:[],tf:0
+}));
+
+function drawDrift(t){
+  ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);
+  const ts=t*0.000018;
+
+  for(const p of PARTS){
+    p.tf++;
+    if(p.tf%TRAIL_INT===0){
+      const tl=p.trail;
+      if(tl.length>0){
+        const last=tl[tl.length-1];
+        if(Math.abs(p.x-last.x)>W*0.4||Math.abs(p.y-last.y)>H*0.4) tl.length=0;
+      }
+      p.trail.push({x:p.x,y:p.y});
+      if(p.trail.length>TRAIL_MAX) p.trail.shift();
+    }
+
+    const nx=p.x/W,ny=p.y/H;
+    const sharedAng=sn(nx*2.5+ts,ny*2.5+ts*0.75)*Math.PI*2;
+    const personalAng=sn(p.x/500+p.seed+ts*0.4,p.y/500+p.seed*1.3+ts*0.3)*Math.PI*2;
+    const ang=sharedAng*0.82+personalAng*0.18;
+    const noiseStr=boidsOn?0.007:0.011;
+    p.vx+=Math.cos(ang)*noiseStr;
+    p.vy+=Math.sin(ang)*noiseStr;
+
+    const dx=p.x-mx,dy=p.y-my,d=Math.hypot(dx,dy);
+    if(d<220&&d>0.1){
+      const f=Math.exp(-d/110)*0.05;
+      p.vx+=(dx/d)*f;p.vy+=(dy/d)*f;
+    }
+
+    if(boidsOn){
+      let ax=0,ay=0,cx=0,cy=0,sx=0,sy=0,nb=0,sc=0;
+      for(const q of PARTS){
+        if(q===p)continue;
+        const qx=q.x-p.x,qy=q.y-p.y,qd=Math.hypot(qx,qy);
+        if(qd<40&&qd>0){
+          ax+=q.vx;ay+=q.vy;cx+=q.x;cy+=q.y;nb++;
+          if(qd<28){sx-=qx/qd;sy-=qy/qd;sc++;}
+        }
+      }
+      if(nb>0){
+        p.vx+=(ax/nb-p.vx)*0.009;p.vy+=(ay/nb-p.vy)*0.009;
+        p.vx+=(cx/nb-p.x)*0.001;p.vy+=(cy/nb-p.y)*0.001;
+      }
+      if(sc>0){p.vx+=sx*0.014;p.vy+=sy*0.014;}
+    } else {
+      for(const q of PARTS){
+        if(q===p)continue;
+        const qx=p.x-q.x,qy=p.y-q.y,qd=Math.hypot(qx,qy);
+        if(qd<16&&qd>0){p.vx+=(qx/qd)*0.025;p.vy+=(qy/qd)*0.025;}
+      }
+    }
+
+    const sp=Math.hypot(p.vx,p.vy);
+    if(sp>1.6){p.vx*=1.6/sp;p.vy*=1.6/sp;}
+    p.vx*=0.989;p.vy*=0.989;
+    p.x=((p.x+p.vx)+W)%W;p.y=((p.y+p.vy)+H)%H;
+
+    const alpha=Math.min(0.2,0.045+sp*1.5);
+    const hue=195+sp*22;
+    const col=`hsla(${hue},35%,68%,`;
+    if(p.trail.length>1){
+      for(let i=1;i<p.trail.length;i++){
+        const frac=i/p.trail.length;
+        ctx.beginPath();
+        ctx.moveTo(p.trail[i-1].x,p.trail[i-1].y);
+        ctx.lineTo(p.trail[i].x,p.trail[i].y);
+        ctx.strokeStyle=`${col}${alpha*frac*0.4})`;
+        ctx.lineWidth=p.r*0.6;
+        ctx.stroke();
+      }
+    }
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fillStyle=`${col}${alpha})`;ctx.fill();
+  }
+}
+
+// ---- FLOW ----
+function fbm(x,y){return sn(x,y)*0.5+sn(x*2,y*2)*0.25+sn(x*4,y*4)*0.125+sn(x*8,y*8)*0.0625;}
+function getAngle(x,y,t){
+  const v=fbm(x/160+t*0.05,y/160+t*0.035);
+  const mdx=(mx/W-.5)*.5,mdy=(my/H-.5)*.5;
+  return v*Math.PI*4+Math.atan2(mdy-(y/H-.5),mdx-(x/W-.5))*0.12;
+}
+function drawFlow(t){
+  ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);
+  const sp=50,ts=t*0.00008;ctx.lineWidth=0.7;
+  for(let y=sp/2;y<H+sp;y+=sp){for(let x=sp/2;x<W+sp;x+=sp){
+    const a=getAngle(x,y,ts),len=13,dx=Math.cos(a)*len/2,dy=Math.sin(a)*len/2;
+    const dist=Math.hypot(x-mx,y-my);
+    const alpha=Math.max(0.05,Math.min(0.2,0.07+(1-Math.min(1,dist/500))*0.13));
+    ctx.strokeStyle=`rgba(77,158,186,${alpha})`;
+    ctx.beginPath();ctx.moveTo(x-dx,y-dy);ctx.lineTo(x+dx,y+dy);ctx.stroke();
+  }}
+}
+
+function resize(){
+  W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;
+  initFluid();ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);
+}
+window.addEventListener('resize',resize);
+
+document.addEventListener('mousemove',e=>{
+  pmx=mx;pmy=my;mx=e.clientX;my=e.clientY;
+  mvx=mx-pmx;mvy=my-pmy;
+});
+
+function loop(t){
+  if(mode==='noise')drawNoise();
+  else if(mode==='drift')drawDrift(t);
+  else drawFlow(t);
+  mvx*=0.6;mvy*=0.6;
+  requestAnimationFrame(loop);
+}
+
+resize();
+requestAnimationFrame(loop);
+
+document.querySelectorAll('.bg-btn[data-mode]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.bg-btn[data-mode]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    mode=btn.dataset.mode;
+    document.getElementById('boids-wrap').classList.toggle('visible',mode==='drift');
+    if(mode!=='drift'){boidsOn=false;document.getElementById('boids-btn').classList.remove('active');}
+    if(mode==='flow'){ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);}
+    else if(mode==='noise'){ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);}
+  });
+});
+
+document.getElementById('boids-btn').addEventListener('click',function(){
+  boidsOn=!boidsOn;this.classList.toggle('active',boidsOn);
+});
+</script>
+</body>
+</html>
