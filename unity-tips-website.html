@@ -204,19 +204,10 @@ function initFluid(){
 }
 
 function fi(x,y){return y*FW+x;}
-function fw(x){return((x%FW)+FW)%FW;}
-function fh(y){return((y%FH)+FH)%FH;}
-function fiw(x,y){return fh(y)*FW+fw(x);}
 
 function setBnd(b,f){
-  for(let i=0;i<FW;i++){
-    f[fi(i,0)]=f[fi(i,FH-2)];
-    f[fi(i,FH-1)]=f[fi(i,1)];
-  }
-  for(let j=0;j<FH;j++){
-    f[fi(0,j)]=f[fi(FW-2,j)];
-    f[fi(FW-1,j)]=f[fi(1,j)];
-  }
+  for(let i=0;i<FW;i++){f[fi(i,0)]=0;f[fi(i,FH-1)]=0;}
+  for(let j=0;j<FH;j++){f[fi(0,j)]=0;f[fi(FW-1,j)]=0;}
 }
 
 function linSolve(b,x,x0,a,c){
@@ -236,11 +227,12 @@ function diffuse(b,x,x0,diff){
 
 function advect(b,d,d0,u,v){
   const dt0x=DT*FW,dt0y=DT*FH;
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
     let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
-    const i0=fw(Math.floor(x)),i1=fw(i0+1);
-    const j0=fh(Math.floor(y)),j1=fh(j0+1);
-    const s1=x-Math.floor(x),s0=1-s1,t1=y-Math.floor(y),t0=1-t1;
+    x=Math.max(0.5,Math.min(FW-1.5,x));
+    y=Math.max(0.5,Math.min(FH-1.5,y));
+    const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
+    const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
     d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
   }}
   setBnd(b,d);
@@ -248,41 +240,38 @@ function advect(b,d,d0,u,v){
 
 function advectDetail(d,d0,u,v){
   const dt0x=DT*FW,dt0y=DT*FH;
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
     let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
-    const i0=fw(Math.floor(x)),i1=fw(i0+1);
-    const j0=fh(Math.floor(y)),j1=fh(j0+1);
-    const s1=x-Math.floor(x),s0=1-s1,t1=y-Math.floor(y),t0=1-t1;
+    x=Math.max(0.5,Math.min(FW-1.5,x));
+    y=Math.max(0.5,Math.min(FH-1.5,y));
+    const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
+    const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
     d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
   }}
 }
 
 function project(u,v,p,div){
   const hx=1/FW,hy=1/FH;
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const ip=fw(i+1),im=fw(i-1),jp=fh(j+1),jm=fh(j-1);
-    div[fi(i,j)]=-0.5*(hx*(u[fi(ip,j)]-u[fi(im,j)])+hy*(v[fi(i,jp)]-v[fi(i,jm)]));
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    div[fi(i,j)]=-0.5*(hx*(u[fi(i+1,j)]-u[fi(i-1,j)])+hy*(v[fi(i,j+1)]-v[fi(i,j-1)]));
     p[fi(i,j)]=0;
   }}
   setBnd(0,div);setBnd(0,p);
   linSolve(0,p,div,1,4);
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const ip=fw(i+1),im=fw(i-1),jp=fh(j+1),jm=fh(j-1);
-    u[fi(i,j)]-=0.5*(p[fi(ip,j)]-p[fi(im,j)])/hx;
-    v[fi(i,j)]-=0.5*(p[fi(i,jp)]-p[fi(i,jm)])/hy;
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    u[fi(i,j)]-=0.5*(p[fi(i+1,j)]-p[fi(i-1,j)])/hx;
+    v[fi(i,j)]-=0.5*(p[fi(i,j+1)]-p[fi(i,j-1)])/hy;
   }}
   setBnd(1,u);setBnd(2,v);
 }
 
 function vorticityConfinement(u,v){
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const ip=fw(i+1),im=fw(i-1),jp=fh(j+1),jm=fh(j-1);
-    curl[fi(i,j)]=(v[fi(ip,j)]-v[fi(im,j)])-(u[fi(i,jp)]-u[fi(i,jm)]);
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    curl[fi(i,j)]=(v[fi(i+1,j)]-v[fi(i-1,j)])-(u[fi(i,j+1)]-u[fi(i,j-1)]);
   }}
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const ip=fw(i+1),im=fw(i-1),jp=fh(j+1),jm=fh(j-1);
-    const dw_dx=Math.abs(curl[fi(ip,j)])-Math.abs(curl[fi(im,j)]);
-    const dw_dy=Math.abs(curl[fi(i,jp)])-Math.abs(curl[fi(i,jm)]);
+  for(let j=2;j<FH-2;j++){for(let i=2;i<FW-2;i++){
+    const dw_dx=Math.abs(curl[fi(i+1,j)])-Math.abs(curl[fi(i-1,j)]);
+    const dw_dy=Math.abs(curl[fi(i,j+1)])-Math.abs(curl[fi(i,j-1)]);
     const len=Math.hypot(dw_dx,dw_dy)+0.0001;
     const nx=dw_dx/len,ny=dw_dy/len;
     const c=curl[fi(i,j)];
@@ -292,7 +281,21 @@ function vorticityConfinement(u,v){
 }
 
 function applyBuoyancy(u,v,d){
-  for(let i=0;i<N;i++) v[i]-=d[i]*BUOYANCY;
+  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    v[fi(i,j)]-=d[fi(i,j)]*BUOYANCY;
+  }}
+}
+
+function applyLift(u,v,t){
+  const bt=t*0.008;
+  for(let i=1;i<FW-1;i++){
+    const nx=i/FW;
+    const lift=(sn(nx*3+bt,bt*0.6)*0.6+0.4)*0.0007;
+    for(let j=Math.floor(FH*0.72);j<FH-1;j++){
+      const fade=1-(j-FH*0.72)/(FH*0.28);
+      v[fi(i,j)]-=lift*fade*fade;
+    }
+  }
 }
 
 function stepFluid(){
@@ -300,36 +303,31 @@ function stepFluid(){
   const mspd=Math.hypot(mvx,mvy);
   vx0.fill(0);vy0.fill(0);dens0.fill(0);
   if(mspd>0.4){
-    const gx=mx/W*FW,gy=my/H*FH,r=3.5;
-    const str=Math.min(mspd*0.015,0.55);
-    const emitStr=Math.min(mspd*0.0008,0.005);
-    for(let j=Math.max(0,Math.floor(gy-r));j<Math.min(FH,Math.ceil(gy+r));j++){
-      for(let i=Math.max(0,Math.floor(gx-r));i<Math.min(FW,Math.ceil(gx+r));i++){
-        const w=Math.exp(-(Math.pow(i-gx,2)+Math.pow(j-gy,2))/(r*r*0.5));
-        vx0[fi(fw(i),fh(j))]+=mvx*str*w;
-        vy0[fi(fw(i),fh(j))]+=mvy*str*w;
-        dens0[fi(fw(i),fh(j))]+=emitStr*w;
+    const gx=mx/W*FW,gy=my/H*FH,r=2.2;
+    const str=Math.min(mspd*0.01,0.35);
+    const emitStr=Math.min(mspd*0.0005,0.003);
+    for(let j=Math.max(1,Math.floor(gy-r*2));j<Math.min(FH-1,Math.ceil(gy+r*2));j++){
+      for(let i=Math.max(1,Math.floor(gx-r*2));i<Math.min(FW-1,Math.ceil(gx+r*2));i++){
+        const w=Math.exp(-(Math.pow(i-gx,2)+Math.pow(j-gy,2))/(r*r));
+        vx0[fi(i,j)]+=mvx*str*w;
+        vy0[fi(i,j)]+=mvy*str*w;
+        dens0[fi(i,j)]+=emitStr*w;
       }
     }
   }
-  const at=noiseT*0.06;
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const nx=i/FW,ny=j/FH;
-    const ang=(sn(nx*3+at,ny*3+at*0.7)*2-1)*Math.PI;
-    vx0[fi(i,j)]+=Math.cos(ang)*0.0006;
-    vy0[fi(i,j)]+=Math.sin(ang)*0.0006;
-  }}
   for(let i=0;i<N;i++){
     if(dens[i]<MIN_DENS) dens0[i]+=Math.min(AMBIENT_RATE,(MIN_DENS-dens[i])*0.08);
   }
   updateVoid();
   for(let i=0;i<N;i++){vx[i]+=vx0[i];vy[i]+=vy0[i];}
+  for(let i=0;i<N;i++){vx[i]*=0.998;vy[i]*=0.998;}
   diffuse(1,vx0,vx,VISC);diffuse(2,vy0,vy,VISC);
   project(vx0,vy0,vx,vy);
   advect(1,vx,vx0,vx0,vy0);advect(2,vy,vy0,vx0,vy0);
   project(vx,vy,vx0,vy0);
   vorticityConfinement(vx,vy);
   applyBuoyancy(vx,vy,dens);
+  applyLift(vx,vy,noiseT);
   for(let i=0;i<N;i++) dens[i]+=dens0[i];
   diffuse(0,dens0,dens,0.000002);
   advect(0,dens,dens0,vx,vy);
@@ -390,11 +388,13 @@ function drawNoise(){
   for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
     const idx=fi(i,j);
     const d=dens[idx];
-    const det=detail[idx];
+    const det=Math.max(0,Math.min(1,detail[idx]));
     const combined=d*(0.55+det*0.9);
-    const br=Math.floor((1-Math.exp(-combined*5.5))*48);
+    const br=1-Math.exp(-combined*4.2);
     const px=(j*FW+i)*4;
-    img.data[px]=28+br;img.data[px+1]=33+br;img.data[px+2]=40+br+Math.floor(det*3);
+    img.data[px]=Math.floor(10+br*32);
+    img.data[px+1]=Math.floor(12+br*40);
+    img.data[px+2]=Math.floor(15+br*49);
     img.data[px+3]=255;
   }}
   oc.putImageData(img,0,0);
@@ -513,7 +513,7 @@ function drawFlow(t){
 
 function resize(){
   W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;
-  initFluid();ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);
+  initFluid();ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);
 }
 window.addEventListener('resize',resize);
 
@@ -540,7 +540,8 @@ document.querySelectorAll('.bg-btn[data-mode]').forEach(btn=>{
     mode=btn.dataset.mode;
     document.getElementById('boids-wrap').classList.toggle('visible',mode==='drift');
     if(mode!=='drift'){boidsOn=false;document.getElementById('boids-btn').classList.remove('active');}
-    if(mode==='flow'||mode==='noise'){ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);}
+    if(mode==='flow'){ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);}
+    else if(mode==='noise'){ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);}
   });
 });
 
