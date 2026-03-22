@@ -115,7 +115,7 @@ html,body{background:var(--bg);color:var(--text-1);font-family:var(--sans);font-
     <div class="bg-row">
       <div class="bg-btns">
         <button class="bg-btn active" data-mode="flow">flow</button>
-        <button class="bg-btn" data-mode="noise">noise</button>
+        <button class="bg-btn" data-mode="noise">smoke</button>
         <button class="bg-btn" data-mode="drift">drift</button>
       </div>
       <div id="boids-wrap">
@@ -181,229 +181,866 @@ function tog(id){document.getElementById(id).classList.toggle('open');}
 function togs(id){document.getElementById(id).classList.toggle('closed');}
 render();
 
+// ---- SHARED NOISE (CPU side, for drift + detail init) ----
+function h2(x,y){let h=(x*374761393+y*1440673023)|0;h=(h^(h>>13))*1274126177;h=h^(h>>16);return(h&0x7fffffff)/0x7fffffff;}
+function sn(x,y){const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,ux=xf*xf*(3-2*xf),uy=yf*yf*(3-2*yf);return h2(xi,yi)*(1-ux)*(1-uy)+h2(xi+1,yi)*ux*(1-uy)+h2(xi,yi+1)*(1-ux)*uy+h2(xi+1,yi+1)*ux*uy;}
+
 const canvas=document.getElementById('bg');
 const ctx=canvas.getContext('2d');
 let W,H,mx=0,my=0,pmx=0,pmy=0,mvx=0,mvy=0,mode='flow',boidsOn=false;
 
-// ---- FLUID SIM ----
-const FW=128,FH=96,N=FW*FH;
-const DT=1/60,VISC=0.000001,ITER=20,MIN_DENS=0.18,AMBIENT_RATE=0.004;
-const VORT_STR=0.18,BUOYANCY=0.00035;
-let vx,vy,vx0,vy0,dens,dens0,curl,detail,noiseT=0;
+// ---- NOISE BACKGROUND (GPU-first, v0.6 semantics) ----
+const SIM_W=128,SIM_H=96;
+const DT=1/60;
+const MIN_DENS=0.18,AMBIENT_RATE=0.004,HARD_FLOOR=0.09;
+const BUOYANCY=0.00035;
+const MAX_HOLD_R_UV=8/96,HOLD_TIME=280;
+const VEL_DECAY=0.9995;
+const JACOBI_ITERS=20;
 
+// keep this at 0 for the v0.6 branch
+const AMBIENT_CURL=0.0;
+
+const glc=document.createElement('canvas');
+glc.style.cssText='position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;display:none;';
+document.body.insertBefore(glc,document.body.firstChild);
+
+let gl,glReady=false,glW=0,glH=0,glTime=0;
+let mouseHeld=false,holdStart=0,holdPower=0,holdR=0;
+function eio(t){return t<0.5?2*t*t:-1+(4-2*t)*t;}
+function syncNoiseCanvasVisibility(){
+  const gpuNoise=mode==='noise'&&glReady;
+  glc.style.display=gpuNoise?'block':'none';
+  canvas.style.display=gpuNoise?'none':'';
+}
+
+// GPU ping-pong sets
+let velTex=[null,null],velFB=[null,null];
+let densTex=[null,null],densFB=[null,null];
+let detTex=[null,null],detFB=[null,null];
+let pressTex=[null,null],pressFB=[null,null];
+let divTex=null,divFB=null;
+let curlTex=null,curlFB=null;
+let cur={v:0,d:0,t:0,p:0};
+
+let pVelStep,pVelAdv,pVelRelease,pScalarAdv,pScalarBnd,pDensPost,pRender;
+let pDivergence,pJacobi,pGradSub,pVortCurl,pVortForce;
+let quadBuf;
+
+const VORT_STR=0.18;
+const MOUSE_R=2.2;
+
+const VS=`#version 300 es
+in vec2 a;out vec2 v;
+void main(){v=a*.5+.5;gl_Position=vec4(a,0,1);}`;
+
+const NOISE_GLSL=`
+float h2g(vec2 p){p=fract(p*vec2(127.1,311.7));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+float vn(vec2 p){vec2 i=floor(p),f=fract(p),u=f*f*(3.0-2.0*f);
+  return mix(mix(h2g(i),h2g(i+vec2(1,0)),u.x),mix(h2g(i+vec2(0,1)),h2g(i+vec2(1,1)),u.x),u.y);}
+float fbmG(vec2 p){float v=0.0,a=0.5;for(int i=0;i<4;i++){v+=a*vn(p);p=p*2.1+vec2(5.2,1.3);a*=0.5;}return v;}
+vec2 curlN(vec2 uv,float t){
+  float eps=0.005;vec2 off=vec2(t*0.003,t*0.0018);
+  float pN=fbmG(uv*4.0+vec2(0,eps)+off),pS=fbmG(uv*4.0-vec2(0,eps)+off);
+  float pE=fbmG(uv*4.0+vec2(eps,0)+off),pW=fbmG(uv*4.0-vec2(eps,0)+off);
+  return vec2(pN-pS,-(pE-pW))*(0.5/eps);}`;
+
+const FS_VEL_STEP=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel;
+uniform vec2 uMouse,uMVel,uTexel;
+uniform float uDecay,uMouseR;
+void main(){
+  vec2 vel=texture(uVel,v).rg;
+
+  // exact v0.6 mouse footprint in cell-space
+  vec2 dg=(v-uMouse)/uTexel;
+  float w=exp(-dot(dg,dg)/(uMouseR*uMouseR));
+  vel += uMVel*w;
+  vel *= uDecay;
+
+  // match CPU setBnd for velocity: whole outer ring is zero
+  if(v.x<=uTexel.x||v.x>=1.0-uTexel.x||v.y<=uTexel.y||v.y>=1.0-uTexel.y){
+    vel=vec2(0.0);
+  }
+
+  c=vec4(vel,0,1);
+}`;
+
+const FS_VEL_ADV=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel;
+uniform vec2 uTexel;
+uniform float uDt;
+
+vec2 clampUV(vec2 uv){
+  return clamp(uv,uTexel*0.5,vec2(1.0)-uTexel*0.5);
+}
+
+vec2 sampleVelLinear(vec2 uv){
+  vec2 p=uv/uTexel-0.5;
+  vec2 i=floor(p);
+  vec2 f=fract(p);
+
+  vec2 uv00=clampUV((i+vec2(0.5,0.5))*uTexel);
+  vec2 uv10=clampUV((i+vec2(1.5,0.5))*uTexel);
+  vec2 uv01=clampUV((i+vec2(0.5,1.5))*uTexel);
+  vec2 uv11=clampUV((i+vec2(1.5,1.5))*uTexel);
+
+  vec2 a=texture(uVel,uv00).rg;
+  vec2 b=texture(uVel,uv10).rg;
+  vec2 d=texture(uVel,uv01).rg;
+  vec2 e=texture(uVel,uv11).rg;
+
+  return mix(mix(a,b,f.x),mix(d,e,f.x),f.y);
+}
+
+void main(){
+  vec2 velNow=sampleVelLinear(v);
+  vec2 prev=clampUV(v-velNow*uDt);
+  vec2 vel=sampleVelLinear(prev);
+
+  if(v.x<=uTexel.x||v.x>=1.0-uTexel.x||v.y<=uTexel.y||v.y>=1.0-uTexel.y){
+    vel=vec2(0.0);
+  }
+
+  c=vec4(vel,0,1);
+}`;
+
+const FS_VORT_CURL=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel;
+uniform vec2 uTexel;
+void main(){
+  float L=texture(uVel,clamp(v-vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).g;
+  float R=texture(uVel,clamp(v+vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).g;
+  float B=texture(uVel,clamp(v-vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float T=texture(uVel,clamp(v+vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  c=vec4((R-L)-(T-B),0,0,1);
+}`;
+
+const FS_VORT_FORCE=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel,uCurl,uDens;
+uniform vec2 uTexel;
+uniform float uVortStr,uBuoyancy,uTime;
+${NOISE_GLSL}
+void main(){
+  vec2 vel=texture(uVel,v).rg;
+
+  float cL=abs(texture(uCurl,clamp(v-vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r);
+  float cR=abs(texture(uCurl,clamp(v+vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r);
+  float cB=abs(texture(uCurl,clamp(v-vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r);
+  float cT=abs(texture(uCurl,clamp(v+vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r);
+
+  vec2 eta=vec2(cR-cL,cT-cB);
+  float len=length(eta)+0.0001;
+  vec2 n=eta/len;
+  float curl=texture(uCurl,v).r;
+
+  // exact v0.6 confinement form: (ny*c, -nx*c) * VORT_STR * DT
+  vel += uVortStr*${DT}*vec2(n.y*curl,-n.x*curl);
+
+  // y-up GPU space: v0.6's negative screen-y buoyancy/lift become positive here
+  float dens=texture(uDens,v).r;
+  vel.y += dens*uBuoyancy;
+
+  if(v.y < 0.28){
+    float fade=(0.28-v.y)/0.28;
+    float bt=uTime*0.008;
+    float lift=(vn(vec2(v.x*3.0+bt,bt*0.6))*0.6+0.4)*0.006;
+    vel.y += lift*fade*fade;
+  }
+
+  if(v.x<=uTexel.x||v.x>=1.0-uTexel.x||v.y<=uTexel.y||v.y>=1.0-uTexel.y){
+    vel=vec2(0.0);
+  }
+
+  c=vec4(vel,0,1);
+}`;
+
+const FS_VEL_RELEASE=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel;
+uniform vec2 uMouse,uTexel;
+uniform float uPower,uRadius,uAspect;
+void main(){
+  vec2 cur=texture(uVel,v).rg;
+  vec2 d=(v-uMouse)*vec2(uAspect,1.0);
+  float dist=length(d);
+  float inR=uRadius*2.8;
+
+  if(dist>0.001&&dist<inR){
+    vec2 dir=normalize((uMouse-v)*vec2(uAspect,1.0))/vec2(uAspect,1.0);
+    cur += dir * ((1.0-dist/inR)*uPower*4.5);
+  }
+
+  if(v.x<=uTexel.x||v.x>=1.0-uTexel.x||v.y<=uTexel.y||v.y>=1.0-uTexel.y){
+    cur=vec2(0.0);
+  }
+
+  c=vec4(cur,0,1);
+}`;
+
+const FS_SCALAR_ADV=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uField,uVel;
+uniform vec2 uTexel;
+uniform float uDt;
+
+vec2 clampUV(vec2 uv){
+  return clamp(uv,uTexel*0.5,vec2(1.0)-uTexel*0.5);
+}
+
+vec2 sampleVelLinear(vec2 uv){
+  vec2 p=uv/uTexel-0.5;
+  vec2 i=floor(p);
+  vec2 f=fract(p);
+
+  vec2 uv00=clampUV((i+vec2(0.5,0.5))*uTexel);
+  vec2 uv10=clampUV((i+vec2(1.5,0.5))*uTexel);
+  vec2 uv01=clampUV((i+vec2(0.5,1.5))*uTexel);
+  vec2 uv11=clampUV((i+vec2(1.5,1.5))*uTexel);
+
+  vec2 a=texture(uVel,uv00).rg;
+  vec2 b=texture(uVel,uv10).rg;
+  vec2 d=texture(uVel,uv01).rg;
+  vec2 e=texture(uVel,uv11).rg;
+
+  return mix(mix(a,b,f.x),mix(d,e,f.x),f.y);
+}
+
+float sampleFieldLinear(vec2 uv){
+  vec2 p=uv/uTexel-0.5;
+  vec2 i=floor(p);
+  vec2 f=fract(p);
+
+  vec2 uv00=clampUV((i+vec2(0.5,0.5))*uTexel);
+  vec2 uv10=clampUV((i+vec2(1.5,0.5))*uTexel);
+  vec2 uv01=clampUV((i+vec2(0.5,1.5))*uTexel);
+  vec2 uv11=clampUV((i+vec2(1.5,1.5))*uTexel);
+
+  float a=texture(uField,uv00).r;
+  float b=texture(uField,uv10).r;
+  float d=texture(uField,uv01).r;
+  float e=texture(uField,uv11).r;
+
+  return mix(mix(a,b,f.x),mix(d,e,f.x),f.y);
+}
+
+void main(){
+  vec2 vel=sampleVelLinear(v);
+  vec2 prev=clampUV(v-vel*uDt);
+  c=vec4(sampleFieldLinear(prev),0,0,1);
+}`;
+
+const FS_SCALAR_BND=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uField;
+uniform vec2 uTexel;
+void main(){
+  vec2 uv=v;
+
+  // CPU setBnd(0): copy nearest interior scalar onto the outer ring
+  if(v.x<=uTexel.x) uv.x=uTexel.x*1.5;
+  else if(v.x>=1.0-uTexel.x) uv.x=1.0-uTexel.x*1.5;
+
+  if(v.y<=uTexel.y) uv.y=uTexel.y*1.5;
+  else if(v.y>=1.0-uTexel.y) uv.y=1.0-uTexel.y*1.5;
+
+  c=vec4(texture(uField,uv).r,0,0,1);
+}`;
+
+const FS_DIVERGENCE=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel;
+uniform vec2 uTexel;
+void main(){
+  float L=texture(uVel,clamp(v-vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float R=texture(uVel,clamp(v+vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float B=texture(uVel,clamp(v-vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).g;
+  float T=texture(uVel,clamp(v+vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).g;
+  float div=-0.5*((R-L)+(T-B));
+  c=vec4(div,0,0,1);
+}`;
+
+const FS_JACOBI=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uPressure,uDivergence;
+uniform vec2 uTexel;
+void main(){
+  float L=texture(uPressure,clamp(v-vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float R=texture(uPressure,clamp(v+vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float B=texture(uPressure,clamp(v-vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float T=texture(uPressure,clamp(v+vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float div=texture(uDivergence,v).r;
+  c=vec4((L+R+B+T+div)*0.25,0,0,1);
+}`;
+
+const FS_GRADSUB=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uVel,uPressure;
+uniform vec2 uTexel;
+void main(){
+  vec2 vel=texture(uVel,v).rg;
+  float L=texture(uPressure,clamp(v-vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float R=texture(uPressure,clamp(v+vec2(uTexel.x,0.0),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float B=texture(uPressure,clamp(v-vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+  float T=texture(uPressure,clamp(v+vec2(0.0,uTexel.y),uTexel*0.5,vec2(1.0)-uTexel*0.5)).r;
+
+  vel -= vec2(R-L,T-B)*0.5;
+
+  if(v.x<=uTexel.x||v.x>=1.0-uTexel.x||v.y<=uTexel.y||v.y>=1.0-uTexel.y){
+    vel=vec2(0.0);
+  }
+
+  c=vec4(vel,0,1);
+}`;
+
+const FS_DENS_POST=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uDens;uniform vec2 uMouse;uniform float uPower,uRadius,uAspect,uMinDens,uAmbientRate,uHardFloor;
+void main(){
+  float d=texture(uDens,v).r;
+  vec2 diff=(v-uMouse)*vec2(uAspect,1.0);
+  float dist=length(diff);
+  if(uPower>0.0&&dist<uRadius) d=max(0.0,d-uPower*0.055*(1.0-dist/uRadius));
+  float deficit=uMinDens-d;
+  if(deficit>0.0) d+=min(uAmbientRate,deficit*0.08);
+  d=max(d,uHardFloor);
+  c=vec4(d,0,0,1);
+}`;
+
+const FS_RENDER=`#version 300 es
+precision highp float;
+in vec2 v;out vec4 c;
+uniform sampler2D uDens,uDetail;
+uniform vec2 uTexel;
+
+vec2 clampUV(vec2 uv){
+  return clamp(uv,uTexel*0.5,vec2(1.0)-uTexel*0.5);
+}
+
+float brAt(vec2 uv){
+  uv = clampUV(uv);
+  float d = texture(uDens,uv).r;
+  float det = clamp(texture(uDetail,uv).r,0.0,1.0);
+  float combined = d * (0.55 + det * 0.9);
+  return 1.0 - exp(-combined * 6.5);
+}
+
+float sampleBr(vec2 uv){
+  vec2 p = uv / uTexel - 0.5;
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+
+  vec2 uv00 = clampUV((i + vec2(0.5,0.5)) * uTexel);
+  vec2 uv10 = clampUV((i + vec2(1.5,0.5)) * uTexel);
+  vec2 uv01 = clampUV((i + vec2(0.5,1.5)) * uTexel);
+  vec2 uv11 = clampUV((i + vec2(1.5,1.5)) * uTexel);
+
+  float a = brAt(uv00);
+  float b = brAt(uv10);
+  float d = brAt(uv01);
+  float e = brAt(uv11);
+
+  return mix(mix(a,b,f.x),mix(d,e,f.x),f.y);
+}
+
+void main(){
+  float br = sampleBr(v);
+  c = vec4((10.0 + br * 32.0) / 255.0,
+           (12.0 + br * 40.0) / 255.0,
+           (15.0 + br * 50.0 + (1.0 - br) * 4.0) / 255.0,
+           1.0);
+}`;
+
+function mkShader(type,src){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s)||'shader compile failed');
+  return s;
+}
+function mkProg(fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,mkShader(gl.VERTEX_SHADER,VS));
+  gl.attachShader(p,mkShader(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p)||'program link failed');
+  return p;
+}
+function mkTex(w,h,iFmt,fmt,data,filter=gl.NEAREST){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texImage2D(gl.TEXTURE_2D,0,iFmt,w,h,0,fmt,gl.FLOAT,data||null);
+  return t;
+}
+function freeSingle(tex,fb){
+  if(tex)gl.deleteTexture(tex);
+  if(fb)gl.deleteFramebuffer(fb);
+}
+function mkFB(tex){
+  const fb=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+  if(!ok)throw new Error('incomplete framebuffer');
+  return fb;
+}
+function pass(prog,fb,uniforms,textures){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.viewport(0,0,fb?SIM_W:glW,fb?SIM_H:glH);
+  gl.useProgram(prog);
+  const aLoc=gl.getAttribLocation(prog,'a');
+  gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf);
+  gl.enableVertexAttribArray(aLoc);
+  gl.vertexAttribPointer(aLoc,2,gl.FLOAT,false,0,0);
+  let unit=0;
+  for(const[name,tex]of Object.entries(textures||{})){
+    gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.uniform1i(gl.getUniformLocation(prog,name),unit);unit++;
+  }
+  for(const[name,val]of Object.entries(uniforms||{})){
+    const loc=gl.getUniformLocation(prog,name);
+    if(loc===null)continue;
+    if(Array.isArray(val)){
+      if(val.length===2)gl.uniform2f(loc,val[0],val[1]);
+    } else gl.uniform1f(loc,val);
+  }
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+function freePair(texArr,fbArr){
+  for(let i=0;i<2;i++){
+    if(texArr[i])gl.deleteTexture(texArr[i]);
+    if(fbArr[i])gl.deleteFramebuffer(fbArr[i]);
+    texArr[i]=fbArr[i]=null;
+  }
+}
+function initGL(){
+  try{
+    gl=glc.getContext('webgl2',{alpha:false,antialias:false,premultipliedAlpha:false});
+    if(!gl)throw new Error('webgl2 unavailable');
+    if(!gl.getExtension('EXT_color_buffer_float'))throw new Error('EXT_color_buffer_float unavailable');
+    pVelStep=mkProg(FS_VEL_STEP);
+    pVelAdv=mkProg(FS_VEL_ADV);
+    pVelRelease=mkProg(FS_VEL_RELEASE);
+    pScalarAdv=mkProg(FS_SCALAR_ADV);
+    pScalarBnd=mkProg(FS_SCALAR_BND);
+    pDensPost=mkProg(FS_DENS_POST);
+    pRender=mkProg(FS_RENDER);
+    pDivergence=mkProg(FS_DIVERGENCE);
+    pJacobi=mkProg(FS_JACOBI);
+    pGradSub=mkProg(FS_GRADSUB);
+    pVortCurl=mkProg(FS_VORT_CURL);
+    pVortForce=mkProg(FS_VORT_FORCE);
+    quadBuf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+    gl.disable(gl.BLEND);
+    glReady=true;
+  }catch(err){
+    console.warn('GPU noise disabled:',err && err.message ? err.message : err);
+    glReady=false;
+  }
+  syncNoiseCanvasVisibility();
+}
+function resizeGL(){
+  if(!glReady)return;
+
+  glW=glc.width=window.innerWidth;
+  glH=glc.height=window.innerHeight;
+
+  const N=SIM_W*SIM_H;
+  const zeroVel=new Float32Array(N*2);
+  const zeroR=new Float32Array(N);
+  const dd=new Float32Array(N);
+  const det=new Float32Array(N);
+
+  for(let j=0;j<SIM_H;j++)for(let i=0;i<SIM_W;i++){
+    const nx=i/SIM_W,ny=j/SIM_H,idx=j*SIM_W+i;
+    dd[idx]=0.22+sn(nx*4,ny*4)*0.12+sn(nx*8+3,ny*8+1.7)*0.06;
+    det[idx]=sn(nx*6+10,ny*6+7)*0.7+sn(nx*12+5,ny*12+3)*0.3;
+  }
+
+  freePair(velTex,velFB);
+  freePair(densTex,densFB);
+  freePair(detTex,detFB);
+  freePair(pressTex,pressFB);
+  freeSingle(divTex,divFB);
+  freeSingle(curlTex,curlFB);
+  divTex=null;divFB=null;
+  curlTex=null;curlFB=null;
+
+  for(let k=0;k<2;k++){
+    velTex[k]=mkTex(SIM_W,SIM_H,gl.RG32F,gl.RG,zeroVel,gl.NEAREST);
+    velFB[k]=mkFB(velTex[k]);
+
+    densTex[k]=mkTex(SIM_W,SIM_H,gl.R32F,gl.RED,dd,gl.NEAREST);
+    densFB[k]=mkFB(densTex[k]);
+
+    detTex[k]=mkTex(SIM_W,SIM_H,gl.R32F,gl.RED,det,gl.NEAREST);
+    detFB[k]=mkFB(detTex[k]);
+
+    pressTex[k]=mkTex(SIM_W,SIM_H,gl.R32F,gl.RED,zeroR,gl.NEAREST);
+    pressFB[k]=mkFB(pressTex[k]);
+  }
+
+  divTex=mkTex(SIM_W,SIM_H,gl.R32F,gl.RED,zeroR,gl.NEAREST);
+  divFB=mkFB(divTex);
+
+  curlTex=mkTex(SIM_W,SIM_H,gl.R32F,gl.RED,zeroR,gl.NEAREST);
+  curlFB=mkFB(curlTex);
+
+  cur.v=cur.d=cur.t=cur.p=0;
+}
+function releaseVoidGL(cx,cy){
+  if(!glReady||holdR<0.001)return;
+  const asp=glW/glH;
+  const texel=[1/SIM_W,1/SIM_H];
+  const nv=(cur.v+1)%2;
+  pass(pVelRelease,velFB[nv],
+    {
+      uMouse:[cx/glW,1-cy/glH],
+      uPower:holdPower,
+      uRadius:holdR,
+      uAspect:asp,
+      uTexel:texel
+    },
+    {uVel:velTex[cur.v]}
+  );
+  cur.v=nv;
+}
+function projectGL(texel){
+  pass(pDivergence,divFB,{uTexel:texel},{uVel:velTex[cur.v]});
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER,pressFB[0]);
+  gl.viewport(0,0,SIM_W,SIM_H);
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER,pressFB[1]);
+  gl.viewport(0,0,SIM_W,SIM_H);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  cur.p=0;
+  for(let i=0;i<JACOBI_ITERS;i++){
+    const np=(cur.p+1)%2;
+    pass(pJacobi,pressFB[np],{uTexel:texel},{uPressure:pressTex[cur.p],uDivergence:divTex});
+    cur.p=np;
+  }
+
+  const nv=(cur.v+1)%2;
+  pass(pGradSub,velFB[nv],{uTexel:texel},{uVel:velTex[cur.v],uPressure:pressTex[cur.p]});
+  cur.v=nv;
+}
+function scalarBoundary(texArr,fbArr,idx,texel){
+  const ni=(idx+1)%2;
+  pass(pScalarBnd,fbArr[ni],{uTexel:texel},{uField:texArr[idx]});
+  return ni;
+}
+function stepGL(){
+  if(!glReady)return;
+  glTime+=DT;
+
+  const asp=glW/glH;
+  const texel=[1/SIM_W,1/SIM_H];
+  const mxn=mx/glW;
+  const myn=1-my/glH;
+
+  const mspdPx=Math.hypot(mvx,mvy);
+  let mvel=[0,0];
+  if(mspdPx>0.4){
+    const str=Math.min(mspdPx*0.004,0.18);
+    mvel=[mvx*str,-mvy*str];
+  }
+
+  {
+    const nv=(cur.v+1)%2;
+    pass(pVelStep,velFB[nv],{
+      uMouse:[mxn,myn],
+      uMVel:mvel,
+      uTexel:texel,
+      uDecay:VEL_DECAY,
+      uMouseR:MOUSE_R
+    },{
+      uVel:velTex[cur.v]
+    });
+    cur.v=nv;
+  }
+
+  projectGL(texel);
+
+  {
+    const nv=(cur.v+1)%2;
+    pass(pVelAdv,velFB[nv],{
+      uTexel:texel,
+      uDt:DT
+    },{
+      uVel:velTex[cur.v]
+    });
+    cur.v=nv;
+  }
+
+  projectGL(texel);
+
+  pass(pVortCurl,curlFB,{uTexel:texel},{uVel:velTex[cur.v]});
+  {
+    const nv=(cur.v+1)%2;
+    pass(pVortForce,velFB[nv],{
+      uTexel:texel,
+      uVortStr:VORT_STR,
+      uBuoyancy:BUOYANCY,
+      uTime:glTime
+    },{
+      uVel:velTex[cur.v],
+      uCurl:curlTex,
+      uDens:densTex[cur.d]
+    });
+    cur.v=nv;
+  }
+
+  if(mouseHeld&&mode==='noise'){
+    const t=Math.min(1,(performance.now()-holdStart)/HOLD_TIME);
+    holdPower=eio(t);
+    holdR=holdPower*MAX_HOLD_R_UV;
+  }
+
+  // Pre-transport: void + ambient refill only
+  {
+    const nd=(cur.d+1)%2;
+    pass(pDensPost,densFB[nd],{
+      uMouse:[mxn,myn],
+      uPower:mouseHeld&&mode==='noise'?holdPower:0,
+      uRadius:holdR,
+      uAspect:asp,
+      uMinDens:MIN_DENS,
+      uAmbientRate:AMBIENT_RATE,
+      uHardFloor:0
+    },{
+      uDens:densTex[cur.d]
+    });
+    cur.d=nd;
+  }
+  cur.d=scalarBoundary(densTex,densFB,cur.d,texel);
+
+  {
+    const nd=(cur.d+1)%2;
+    pass(pScalarAdv,densFB[nd],{
+      uTexel:texel,
+      uDt:DT
+    },{
+      uField:densTex[cur.d],
+      uVel:velTex[cur.v]
+    });
+    cur.d=nd;
+  }
+  cur.d=scalarBoundary(densTex,densFB,cur.d,texel);
+
+  {
+    const nt=(cur.t+1)%2;
+    pass(pScalarAdv,detFB[nt],{
+      uTexel:texel,
+      uDt:DT
+    },{
+      uField:detTex[cur.t],
+      uVel:velTex[cur.v]
+    });
+    cur.t=nt;
+  }
+  cur.t=scalarBoundary(detTex,detFB,cur.t,texel);
+
+  // Post-transport: CPU-style final density floor
+  {
+    const nd=(cur.d+1)%2;
+    pass(pDensPost,densFB[nd],{
+      uMouse:[0,0],
+      uPower:0,
+      uRadius:0,
+      uAspect:1,
+      uMinDens:0,
+      uAmbientRate:0,
+      uHardFloor:HARD_FLOOR
+    },{
+      uDens:densTex[cur.d]
+    });
+    cur.d=nd;
+  }
+  cur.d=scalarBoundary(densTex,densFB,cur.d,texel);
+
+  pass(pRender,null,{uTexel:texel},{
+    uDens:densTex[cur.d],
+    uDetail:detTex[cur.t]
+  });
+}
+
+// CPU fallback: exact v0.6 noise path when GPU is unavailable
+const FW=128,FH=96,N=FW*FH;
+const VISC=0.000001,ITER=20;
+let vx,vy,vx0,vy0,dens,dens0,curl,detail,noiseT=0;
+function fi(x,y){return y*FW+x;}
 function initFluid(){
   vx=new Float32Array(N);vy=new Float32Array(N);
   vx0=new Float32Array(N);vy0=new Float32Array(N);
   dens=new Float32Array(N);dens0=new Float32Array(N);
   curl=new Float32Array(N);detail=new Float32Array(N);
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const nx=i/FW,ny=j/FH;
-    dens[fi(i,j)]=0.22+sn(nx*4,ny*4)*0.12+sn(nx*8+3,ny*8+1.7)*0.06;
-    detail[fi(i,j)]=sn(nx*6+10,ny*6+7)*0.7+sn(nx*12+5,ny*12+3)*0.3;
-  }}
+  for(let j=0;j<FH;j++)for(let i=0;i<FW;i++){
+    const nx=i/FW,ny=j/FH,idx=fi(i,j);
+    dens[idx]=0.22+sn(nx*4,ny*4)*0.12+sn(nx*8+3,ny*8+1.7)*0.06;
+    detail[idx]=sn(nx*6+10,ny*6+7)*0.7+sn(nx*12+5,ny*12+3)*0.3;
+  }
 }
-
-function fi(x,y){return y*FW+x;}
-
 function setBnd(b,f){
   if(b===0){
     for(let i=0;i<FW;i++){f[fi(i,0)]=f[fi(i,1)];f[fi(i,FH-1)]=f[fi(i,FH-2)];}
     for(let j=0;j<FH;j++){f[fi(0,j)]=f[fi(1,j)];f[fi(FW-1,j)]=f[fi(FW-2,j)];}
-  } else {
+  }else{
     for(let i=0;i<FW;i++){f[fi(i,0)]=0;f[fi(i,FH-1)]=0;}
     for(let j=0;j<FH;j++){f[fi(0,j)]=0;f[fi(FW-1,j)]=0;}
   }
 }
-
 function linSolve(b,x,x0,a,c){
   const cR=1/c;
   for(let k=0;k<ITER;k++){
-    for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+    for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++){
       x[fi(i,j)]=(x0[fi(i,j)]+a*(x[fi(i-1,j)]+x[fi(i+1,j)]+x[fi(i,j-1)]+x[fi(i,j+1)]))*cR;
-    }}
+    }
     setBnd(b,x);
   }
 }
-
-function diffuse(b,x,x0,diff){
-  const a=DT*diff*FW*FH;
-  linSolve(b,x,x0,a,1+4*a);
-}
-
+function diffuse(b,x,x0,diff){const a=DT*diff*FW*FH;linSolve(b,x,x0,a,1+4*a);}
 function advect(b,d,d0,u,v){
   const dt0x=DT*FW,dt0y=DT*FH;
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+  for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++){
     let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
-    x=Math.max(0.5,Math.min(FW-1.5,x));
-    y=Math.max(0.5,Math.min(FH-1.5,y));
+    x=Math.max(0.5,Math.min(FW-1.5,x));y=Math.max(0.5,Math.min(FH-1.5,y));
     const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
     const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
     d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
-  }}
+  }
   setBnd(b,d);
 }
-
 function advectDetail(d,d0,u,v){
   const dt0x=DT*FW,dt0y=DT*FH;
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+  for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++){
     let x=i-dt0x*u[fi(i,j)],y=j-dt0y*v[fi(i,j)];
-    x=Math.max(0.5,Math.min(FW-1.5,x));
-    y=Math.max(0.5,Math.min(FH-1.5,y));
+    x=Math.max(0.5,Math.min(FW-1.5,x));y=Math.max(0.5,Math.min(FH-1.5,y));
     const i0=Math.floor(x),i1=i0+1,j0=Math.floor(y),j1=j0+1;
     const s1=x-i0,s0=1-s1,t1=y-j0,t0=1-t1;
     d[fi(i,j)]=s0*(t0*d0[fi(i0,j0)]+t1*d0[fi(i0,j1)])+s1*(t0*d0[fi(i1,j0)]+t1*d0[fi(i1,j1)]);
-  }}
+  }
 }
-
 function project(u,v,p,div){
   const hx=1/FW,hy=1/FH;
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+  for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++){
     div[fi(i,j)]=-0.5*(hx*(u[fi(i+1,j)]-u[fi(i-1,j)])+hy*(v[fi(i,j+1)]-v[fi(i,j-1)]));
     p[fi(i,j)]=0;
-  }}
-  setBnd(0,div);setBnd(0,p);
-  linSolve(0,p,div,1,4);
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
+  }
+  setBnd(0,div);setBnd(0,p);linSolve(0,p,div,1,4);
+  for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++){
     u[fi(i,j)]-=0.5*(p[fi(i+1,j)]-p[fi(i-1,j)])/hx;
     v[fi(i,j)]-=0.5*(p[fi(i,j+1)]-p[fi(i,j-1)])/hy;
-  }}
+  }
   setBnd(1,u);setBnd(2,v);
 }
-
 function vorticityConfinement(u,v){
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
-    curl[fi(i,j)]=(v[fi(i+1,j)]-v[fi(i-1,j)])-(u[fi(i,j+1)]-u[fi(i,j-1)]);
-  }}
-  for(let j=2;j<FH-2;j++){for(let i=2;i<FW-2;i++){
+  for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++)curl[fi(i,j)]=(v[fi(i+1,j)]-v[fi(i-1,j)])-(u[fi(i,j+1)]-u[fi(i,j-1)]);
+  for(let j=2;j<FH-2;j++)for(let i=2;i<FW-2;i++){
     const dw_dx=Math.abs(curl[fi(i+1,j)])-Math.abs(curl[fi(i-1,j)]);
     const dw_dy=Math.abs(curl[fi(i,j+1)])-Math.abs(curl[fi(i,j-1)]);
     const len=Math.hypot(dw_dx,dw_dy)+0.0001;
-    const nx=dw_dx/len,ny=dw_dy/len;
-    const c=curl[fi(i,j)];
-    u[fi(i,j)]+=VORT_STR*DT*(ny*c);
-    v[fi(i,j)]-=VORT_STR*DT*(nx*c);
-  }}
+    const nx=dw_dx/len,ny=dw_dy/len,c=curl[fi(i,j)];
+    u[fi(i,j)]+=VORT_STR*DT*(ny*c);v[fi(i,j)]-=VORT_STR*DT*(nx*c);
+  }
 }
-
-function applyBuoyancy(u,v,d){
-  for(let j=1;j<FH-1;j++){for(let i=1;i<FW-1;i++){
-    v[fi(i,j)]-=d[fi(i,j)]*BUOYANCY;
-  }}
-}
-
+function applyBuoyancy(u,v,d){for(let j=1;j<FH-1;j++)for(let i=1;i<FW-1;i++)v[fi(i,j)]-=d[fi(i,j)]*BUOYANCY;}
 function applyLift(u,v,t){
   const bt=t*0.008;
   for(let i=1;i<FW-1;i++){
-    const nx=i/FW;
-    const lift=(sn(nx*3+bt,bt*0.6)*0.6+0.4)*0.006;
+    const nx=i/FW,lift=(sn(nx*3+bt,bt*0.6)*0.6+0.4)*0.006;
     for(let j=Math.floor(FH*0.72);j<FH-1;j++){
-      const fade=1-(j-FH*0.72)/(FH*0.28);
-      v[fi(i,j)]-=lift*fade*fade;
+      const fade=1-(j-FH*0.72)/(FH*0.28);v[fi(i,j)]-=lift*fade*fade;
     }
   }
 }
-
+function updateVoidCPU(){
+  if(!mouseHeld)return;
+  const t=Math.min(1,(performance.now()-holdStart)/HOLD_TIME);
+  holdPower=eio(t);holdR=holdPower*8;
+  const gx=mx/W*FW,gy=my/H*FH;
+  for(let j=Math.max(1,Math.floor(gy-holdR-1));j<Math.min(FH-1,Math.ceil(gy+holdR+1));j++)for(let i=Math.max(1,Math.floor(gx-holdR-1));i<Math.min(FW-1,Math.ceil(gx+holdR+1));i++){
+    const d=Math.hypot(i-gx,j-gy);
+    if(d<holdR){const rm=holdPower*0.055*(1-d/holdR);dens[fi(i,j)]=Math.max(0,dens[fi(i,j)]-rm);}
+  }
+}
+function releaseVoidCPU(cx,cy){
+  if(holdR<0.5)return;
+  const gx=cx/W*FW,gy=cy/H*FH,r=holdR*2.8;
+  for(let j=Math.max(1,Math.floor(gy-r));j<Math.min(FH-1,Math.ceil(gy+r));j++)for(let i=Math.max(1,Math.floor(gx-r));i<Math.min(FW-1,Math.ceil(gx+r));i++){
+    const dx=gx-i,dy=gy-j,d=Math.hypot(dx,dy);
+    if(d>0.1&&d<r){const s=(1-d/r)*holdPower*4.5;vx[fi(i,j)]+=(dx/d)*s;vy[fi(i,j)]+=(dy/d)*s;}
+  }
+}
 function stepFluid(){
   noiseT+=DT;
   const mspd=Math.hypot(mvx,mvy);
   vx0.fill(0);vy0.fill(0);dens0.fill(0);
   if(mspd>0.4){
-    const gx=mx/W*FW,gy=my/H*FH,r=2.2;
-    const str=Math.min(mspd*0.004,0.18);
-    for(let j=Math.max(1,Math.floor(gy-r*2));j<Math.min(FH-1,Math.ceil(gy+r*2));j++){
-      for(let i=Math.max(1,Math.floor(gx-r*2));i<Math.min(FW-1,Math.ceil(gx+r*2));i++){
-        const w=Math.exp(-(Math.pow(i-gx,2)+Math.pow(j-gy,2))/(r*r));
-        vx0[fi(i,j)]+=mvx*str*w;
-        vy0[fi(i,j)]+=mvy*str*w;
-      }
+    const gx=mx/W*FW,gy=my/H*FH,r=2.2;const str=Math.min(mspd*0.004,0.18);
+    for(let j=Math.max(1,Math.floor(gy-r*2));j<Math.min(FH-1,Math.ceil(gy+r*2));j++)for(let i=Math.max(1,Math.floor(gx-r*2));i<Math.min(FH-1,Math.ceil(gx+r*2));i++){
+      const w=Math.exp(-(Math.pow(i-gx,2)+Math.pow(j-gy,2))/(r*r));vx0[fi(i,j)]+=mvx*str*w;vy0[fi(i,j)]+=mvy*str*w;
     }
   }
-  for(let i=0;i<N;i++){
-    if(dens[i]<MIN_DENS) dens0[i]+=Math.min(AMBIENT_RATE,(MIN_DENS-dens[i])*0.08);
-  }
-  updateVoid();
-  for(let i=0;i<N;i++){vx[i]+=vx0[i];vy[i]+=vy0[i];}
-  for(let i=0;i<N;i++){vx[i]*=0.9995;vy[i]*=0.9995;}
-  diffuse(1,vx0,vx,VISC);diffuse(2,vy0,vy,VISC);
-  project(vx0,vy0,vx,vy);
-  advect(1,vx,vx0,vx0,vy0);advect(2,vy,vy0,vx0,vy0);
-  project(vx,vy,vx0,vy0);
-  vorticityConfinement(vx,vy);
-  applyBuoyancy(vx,vy,dens);
-  applyLift(vx,vy,noiseT);
-  for(let i=0;i<N;i++) dens[i]+=dens0[i];
-  diffuse(0,dens0,dens,0.000002);
-  advect(0,dens,dens0,vx,vy);
-  const dtmp=detail.slice();
-  advectDetail(detail,dtmp,vx,vy);
-  for(let i=0;i<N;i++) if(dens[i]<MIN_DENS*0.5) dens[i]=MIN_DENS*0.5;
+  for(let i=0;i<N;i++)if(dens[i]<MIN_DENS)dens0[i]+=Math.min(AMBIENT_RATE,(MIN_DENS-dens[i])*0.08);
+  updateVoidCPU();
+  for(let i=0;i<N;i++){vx[i]+=vx0[i];vy[i]+=vy0[i];vx[i]*=0.9995;vy[i]*=0.9995;}
+  diffuse(1,vx0,vx,VISC);diffuse(2,vy0,vy,VISC);project(vx0,vy0,vx,vy);advect(1,vx,vx0,vx0,vy0);advect(2,vy,vy0,vx0,vy0);project(vx,vy,vx0,vy0);
+  vorticityConfinement(vx,vy);applyBuoyancy(vx,vy,dens);applyLift(vx,vy,noiseT);
+  for(let i=0;i<N;i++)dens[i]+=dens0[i];
+  diffuse(0,dens0,dens,0.000002);advect(0,dens,dens0,vx,vy);
+  const dtmp=detail.slice();advectDetail(detail,dtmp,vx,vy);
+  for(let i=0;i<N;i++)if(dens[i]<MIN_DENS*0.5)dens[i]=MIN_DENS*0.5;
 }
-
-let mouseHeld=false,holdStart=0,holdPower=0,holdR=0;
-const MAX_HOLD_R=8,HOLD_TIME=280;
-function eio(t){return t<0.5?2*t*t:-1+(4-2*t)*t;}
-
-function updateVoid(){
-  if(!mouseHeld)return;
-  const t=Math.min(1,(performance.now()-holdStart)/HOLD_TIME);
-  holdPower=eio(t);holdR=holdPower*MAX_HOLD_R;
-  const gx=mx/W*FW,gy=my/H*FH;
-  for(let j=Math.max(1,Math.floor(gy-holdR-1));j<Math.min(FH-1,Math.ceil(gy+holdR+1));j++){
-    for(let i=Math.max(1,Math.floor(gx-holdR-1));i<Math.min(FW-1,Math.ceil(gx+holdR+1));i++){
-      const d=Math.hypot(i-gx,j-gy);
-      if(d<holdR){
-        const rm=holdPower*0.055*(1-d/holdR);
-        dens[fi(i,j)]=Math.max(0,dens[fi(i,j)]-rm);
-      }
-    }
-  }
-}
-
-function releaseVoid(cx,cy){
-  if(holdR<0.5)return;
-  const gx=cx/W*FW,gy=cy/H*FH,r=holdR*2.8;
-  for(let j=Math.max(1,Math.floor(gy-r));j<Math.min(FH-1,Math.ceil(gy+r));j++){
-    for(let i=Math.max(1,Math.floor(gx-r));i<Math.min(FW-1,Math.ceil(gx+r));i++){
-      const dx=gx-i,dy=gy-j,d=Math.hypot(dx,dy);
-      if(d>0.1&&d<r){
-        const s=(1-d/r)*holdPower*4.5;
-        vx[fi(i,j)]+=(dx/d)*s;vy[fi(i,j)]+=(dy/d)*s;
-      }
-    }
-  }
-}
-
-document.addEventListener('mousedown',e=>{
-  if(mode==='noise'){mouseHeld=true;holdStart=performance.now();}
-});
-document.addEventListener('mouseup',e=>{
-  if(mode==='noise'&&mouseHeld){releaseVoid(e.clientX,e.clientY);mouseHeld=false;holdPower=0;holdR=0;}
-});
-document.addEventListener('mouseleave',()=>{if(mouseHeld){mouseHeld=false;holdPower=0;holdR=0;}});
-
 const off=document.createElement('canvas');
 const oc=off.getContext('2d');
-
-function drawNoise(){
+function drawNoiseCPU(){
   stepFluid();
   off.width=FW;off.height=FH;
   const img=oc.createImageData(FW,FH);
-  for(let j=0;j<FH;j++){for(let i=0;i<FW;i++){
-    const idx=fi(i,j);
-    const d=dens[idx];
-    const det=Math.max(0,Math.min(1,detail[idx]));
-    const combined=d*(0.55+det*0.9);
-    const br=1-Math.exp(-combined*6.5);
-    const px=(j*FW+i)*4;
-    img.data[px]=Math.floor(10+br*32);
-    img.data[px+1]=Math.floor(12+br*40);
-    img.data[px+2]=Math.floor(15+br*50+(1-br)*4);
-    img.data[px+3]=255;
-  }}
+  for(let j=0;j<FH;j++)for(let i=0;i<FW;i++){
+    const idx=fi(i,j),d=dens[idx],det=Math.max(0,Math.min(1,detail[idx]));
+    const combined=d*(0.55+det*0.9),br=1-Math.exp(-combined*6.5),px=(j*FW+i)*4;
+    img.data[px]=Math.floor(10+br*32);img.data[px+1]=Math.floor(12+br*40);img.data[px+2]=Math.floor(15+br*50+(1-br)*4);img.data[px+3]=255;
+  }
   oc.putImageData(img,0,0);
   ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
   ctx.drawImage(off,0,0,W,H);
 }
+
+document.addEventListener('mousedown',e=>{
+  if(mode==='noise'){mouseHeld=true;holdStart=performance.now();holdPower=0;holdR=0;}
+});
+document.addEventListener('mouseup',e=>{
+  if(mode==='noise'&&mouseHeld){
+    if(glReady)releaseVoidGL(e.clientX,e.clientY);else releaseVoidCPU(e.clientX,e.clientY);
+    mouseHeld=false;holdPower=0;holdR=0;
+  }
+});
+document.addEventListener('mouseleave',()=>{if(mouseHeld){mouseHeld=false;holdPower=0;holdR=0;}});
+
+function drawNoise(){if(glReady)stepGL();else drawNoiseCPU();}
 
 // ---- DRIFT ----
 function h2(x,y){let h=(x*374761393+y*1440673023)|0;h=(h^(h>>13))*1274126177;h=h^(h>>16);return(h&0x7fffffff)/0x7fffffff;}
@@ -516,14 +1153,15 @@ function drawFlow(t){
 
 function resize(){
   W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;
-  initFluid();ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);
+  resizeGL();
+  if(!glReady) initFluid();
+  syncNoiseCanvasVisibility();
+  if(mode!=='noise'||glReady===false){ctx.fillStyle=mode==='noise'?'#070a0d':'#1c2128';ctx.fillRect(0,0,W,H);}
 }
 window.addEventListener('resize',resize);
 
 document.addEventListener('mousemove',e=>{
-  pmx=mx;pmy=my;mx=e.clientX;my=e.clientY;
-  mvx=mx-pmx;mvy=my-pmy;
-});
+  pmx=mx;pmy=my;mx=e.clientX;my=e.clientY;mvx=mx-pmx;mvy=my-pmy;});
 
 function loop(t){
   if(mode==='noise')drawNoise();
@@ -533,18 +1171,17 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-resize();
-requestAnimationFrame(loop);
+initGL();resize();requestAnimationFrame(loop);
 
 document.querySelectorAll('.bg-btn[data-mode]').forEach(btn=>{
   btn.addEventListener('click',()=>{
     document.querySelectorAll('.bg-btn[data-mode]').forEach(b=>b.classList.remove('active'));
-    btn.classList.add('active');
-    mode=btn.dataset.mode;
+    btn.classList.add('active');mode=btn.dataset.mode;
     document.getElementById('boids-wrap').classList.toggle('visible',mode==='drift');
     if(mode!=='drift'){boidsOn=false;document.getElementById('boids-btn').classList.remove('active');}
-    if(mode==='flow'){ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);}
-    else if(mode==='noise'){ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);}
+    syncNoiseCanvasVisibility();
+    if(mode!=='noise'){ctx.fillStyle='#1c2128';ctx.fillRect(0,0,W,H);}
+    else if(!glReady){ctx.fillStyle='#070a0d';ctx.fillRect(0,0,W,H);}
   });
 });
 
